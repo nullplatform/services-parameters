@@ -159,3 +159,4 @@ backend-local.tf
 
 # Superpowers planning artifacts (brainstorm/specs/plans) — local only
 docs/superpowers/
+.DS_Store

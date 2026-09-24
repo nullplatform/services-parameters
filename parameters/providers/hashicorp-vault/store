@@ -41,35 +41,109 @@ PAYLOAD=$(jq -nc \
 
 # Capture the HTTP status alongside the body: curl -s exits 0 even on HTTP 4xx/5xx,
 # so relying on curl's exit code alone would report a failed write as success.
-if ! RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-    -H "X-Vault-Token: $VAULT_TOKEN" \
-    "$VAULT_ADDR/v1/${NS_PREFIX}${VAULT_PATH}" \
-    -d "$PAYLOAD" 2>/dev/null); then
-  log error "❌ Network error storing parameter in Vault at $VAULT_ADDR"
+vault_request() {
+  local method="$1" url="$2" payload="$3" response
+  if ! response=$(curl -s -w "\n%{http_code}" -X "$method" \
+      -H "X-Vault-Token: $VAULT_TOKEN" \
+      "$url" \
+      -d "$payload" 2>/dev/null); then
+    log error "❌ Network error storing parameter in Vault at $VAULT_ADDR"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • Network unreachable to $VAULT_ADDR (DNS / firewall / TLS)"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Test connectivity: curl -s $VAULT_ADDR/v1/sys/health"
+    exit 1
+  fi
+  HTTP_STATUS="${response##*$'\n'}"
+  HTTP_BODY="${response%$'\n'*}"
+}
+
+write_parameter() {
+  vault_request POST "$VAULT_ADDR/v1/${NS_PREFIX}${VAULT_PATH}" "$PAYLOAD"
+}
+
+kv_mount_name() {
+  local prefix="$VAULT_PATH_PREFIX/"
+  local mount="${prefix%%/data/*}"
+  if [ "$mount" = "$prefix" ]; then
+    return 1
+  fi
+  echo "$mount"
+}
+
+create_kv_mount() {
+  local mount="$1"
+  vault_request POST "$VAULT_ADDR/v1/${NS_PREFIX}sys/mounts/$mount" '{"type":"kv","options":{"version":"2"}}'
+  if [[ "$HTTP_STATUS" == 2* ]]; then
+    log info "✅ Created KV v2 mount '$mount' in namespace ${VAULT_NAMESPACE:-<root>}"
+    return 0
+  fi
+  if [[ "$HTTP_STATUS" == 400 && "$HTTP_BODY" == *"path is already in use"* ]]; then
+    return 0
+  fi
+  log error "❌ Failed to create KV v2 mount '$mount' (HTTP $HTTP_STATUS)"
   log error ""
   log error "💡 Possible causes:"
-  log error "   • Network unreachable to $VAULT_ADDR (DNS / firewall / TLS)"
+  log error "   • VAULT_TOKEN lacks create/update on sys/mounts/$mount in namespace ${VAULT_NAMESPACE:-<root>} (403)"
   log error ""
   log error "🔧 How to fix:"
-  log error "   • Test connectivity: curl -s $VAULT_ADDR/v1/sys/health"
+  log error "   • Grant the agent policy: path \"sys/mounts/$mount\" { capabilities = [\"create\", \"update\"] }"
+  log error "   • Or enable it once and set .setup.create_mount=false: vault secrets enable ${VAULT_NAMESPACE:+-namespace=$VAULT_NAMESPACE }-path=$mount -version=2 kv"
+  log error "Vault response: $HTTP_BODY"
   exit 1
-fi
+}
 
-HTTP_STATUS="${RESPONSE##*$'\n'}"
-HTTP_BODY="${RESPONSE%$'\n'*}"
+write_parameter
+
+if [[ "$HTTP_STATUS" == 404 && "$HTTP_BODY" == *"no handler for route"* && "${VAULT_CREATE_MOUNT-true}" == "true" ]]; then
+  if ! MOUNT=$(kv_mount_name); then
+    log error "❌ Cannot derive the KV v2 mount from path_prefix '$VAULT_PATH_PREFIX'"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • path_prefix has no /data/ segment, so the mount name is ambiguous"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Set .setup.path_prefix to the full <mount>/data/<subpath> (e.g. secret/data/nullplatform)"
+    exit 1
+  fi
+  create_kv_mount "$MOUNT"
+  write_parameter
+  ATTEMPTS=1
+  while [[ "$HTTP_BODY" == *"Upgrading from non-versioned to versioned data"* && "$ATTEMPTS" -lt 5 ]]; do
+    sleep "${VAULT_MOUNT_RETRY_DELAY:-1}"
+    write_parameter
+    ATTEMPTS=$((ATTEMPTS + 1))
+  done
+fi
 
 if [[ "$HTTP_STATUS" != 2* ]]; then
   log error "❌ Vault write failed with HTTP $HTTP_STATUS at $VAULT_PATH"
   log error ""
   log error "💡 Possible causes:"
-  log error "   • VAULT_TOKEN lacks write permission on $VAULT_PATH (403)"
-  log error "   • KV v2 mount in path_prefix ($VAULT_PATH_PREFIX) does not exist (404)"
-  log error "   • Wrong Vault namespace (${VAULT_NAMESPACE:-<root>}) — check .setup.namespace"
-  log error "   • path_prefix must be the full <mount>/data/<subpath> (404 if the mount/data segment is wrong)"
-  log error ""
-  log error "🔧 How to fix:"
-  log error "   • Verify token: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/auth/token/lookup-self"
-  log error "   • Confirm the mount: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/${NS_PREFIX}sys/mounts"
+  if [[ "$HTTP_BODY" == *"no handler for route"* ]] && MOUNT=$(kv_mount_name); then
+    log error "   • KV v2 mount '$MOUNT' does not exist in namespace ${VAULT_NAMESPACE:-<root>} (or path_prefix names the wrong mount)"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Set .setup.create_mount=true (the default) to let the agent create it (the token needs create/update on sys/mounts/$MOUNT)"
+    log error "   • Or enable it: vault secrets enable ${VAULT_NAMESPACE:+-namespace=$VAULT_NAMESPACE }-path=$MOUNT -version=2 kv"
+    log error "   • List existing mounts: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/${NS_PREFIX}sys/internal/ui/mounts"
+  elif [[ "$HTTP_BODY" == *"Upgrading from non-versioned to versioned data"* ]]; then
+    log error "   • The KV v2 mount was just created and is still initializing"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Retry the operation in a few seconds"
+  else
+    log error "   • VAULT_TOKEN lacks write permission on $VAULT_PATH (403)"
+    log error "   • KV v2 mount in path_prefix ($VAULT_PATH_PREFIX) does not exist (404)"
+    log error "   • Wrong Vault namespace (${VAULT_NAMESPACE:-<root>}) — check .setup.namespace"
+    log error "   • path_prefix must be the full <mount>/data/<subpath> (404 if the mount/data segment is wrong)"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify token: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/auth/token/lookup-self"
+    log error "   • Confirm the mount: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/${NS_PREFIX}sys/mounts"
+  fi
   log error "Vault response: $HTTP_BODY"
   exit 1
 fi

@@ -19,6 +19,9 @@ locals {
         instance.attributes.setup.path_prefix == null ? {} : {
           path_prefix = instance.attributes.setup.path_prefix
         },
+        instance.attributes.setup.create_mount == null ? {} : {
+          create_mount = instance.attributes.setup.create_mount
+        },
         instance.attributes.setup.kubernetes_role == null ? {} : {
           kubernetes_role = instance.attributes.setup.kubernetes_role
         }

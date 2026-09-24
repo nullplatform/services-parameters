@@ -42,7 +42,7 @@ set -euo pipefail
 # On Vault Enterprise, credentials/roles are scoped to the namespace, so the login
 # must target it too — otherwise Vault returns "access denied".
 #
-# Exports: VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_PATH_PREFIX
+# Exports: VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_PATH_PREFIX, VAULT_CREATE_MOUNT
 
 VAULT_DEFAULT_PATH_PREFIX="secret/data/nullplatform"
 
@@ -50,6 +50,7 @@ VAULT_ADDR=$(get_config_value --env VAULT_ADDR --provider '.setup.address')
 VAULT_AUTH_MODE=$(get_config_value --env VAULT_AUTH_MODE --provider '.setup.auth_mode' --default "userpass")
 VAULT_NAMESPACE=$(get_config_value --env VAULT_NAMESPACE --provider '.setup.namespace' --default "")
 VAULT_PATH_PREFIX=$(get_config_value --env VAULT_PATH_PREFIX --provider '.setup.path_prefix' --default "$VAULT_DEFAULT_PATH_PREFIX")
+VAULT_CREATE_MOUNT=$(get_config_value --env VAULT_CREATE_MOUNT --provider '(.setup.create_mount | tostring)' --default "true")
 # Trim surrounding slashes so URL composition never doubles them.
 VAULT_NAMESPACE="${VAULT_NAMESPACE#/}"
 VAULT_NAMESPACE="${VAULT_NAMESPACE%/}"
@@ -77,6 +78,17 @@ validate_vault_path_config() {
 }
 validate_vault_path_config namespace "$VAULT_NAMESPACE"
 validate_vault_path_config path_prefix "$VAULT_PATH_PREFIX"
+
+if [[ "$VAULT_CREATE_MOUNT" != "true" && "$VAULT_CREATE_MOUNT" != "false" ]]; then
+  log error "❌ Invalid Vault create_mount: '$VAULT_CREATE_MOUNT'"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • .setup.create_mount or VAULT_CREATE_MOUNT is not a boolean"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Set it to true or false"
+  exit 1
+fi
 
 # API base for the login call — namespace-prefixed on Vault Enterprise, plain
 # otherwise. store/retrieve/delete compose the same namespace prefix themselves.
@@ -218,4 +230,4 @@ if [ -z "$VAULT_TOKEN" ]; then
   exit 1
 fi
 
-export VAULT_ADDR VAULT_TOKEN VAULT_NAMESPACE VAULT_PATH_PREFIX
+export VAULT_ADDR VAULT_TOKEN VAULT_NAMESPACE VAULT_PATH_PREFIX VAULT_CREATE_MOUNT
