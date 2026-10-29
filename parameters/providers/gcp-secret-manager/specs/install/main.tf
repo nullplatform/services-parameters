@@ -1,0 +1,49 @@
+module "secret_manager_spec" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/parameter_storage_definition?ref=v6.3.0"
+
+  nrn                                      = var.nrn
+  np_api_key                               = var.np_api_key
+  extra_visible_to_nrns                    = var.extra_visible_to_nrns
+  template_path                            = var.template_path
+  repository_parameter_storage_spec_branch = var.repository_parameter_storage_spec_branch
+  repository_parameter_storage_spec        = var.repository_parameter_storage_spec
+}
+
+module "secret_manager_api_keys" {
+  source   = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/api_key?ref=v6.3.0"
+  for_each = { for key, instance in var.instances : key => instance if instance.enable_notification_channel }
+
+  type               = "agent"
+  nrn                = each.value.nrn
+  specification_slug = "parameter_storage"
+}
+
+module "secret_manager_configuration" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/parameter_storage_configuration?ref=v6.3.0"
+
+  for_each = var.instances
+
+  nrn                         = each.value.nrn
+  np_api_key                  = var.np_api_key
+  provider_specification_slug = module.secret_manager_spec.slug
+  dimensions                  = each.value.dimensions
+  # Optional setup fields left unset are dropped instead of sent as null: the
+  # spec schema types them as string/array and rejects nulls.
+  attributes = merge(each.value.attributes, {
+    setup = { for k, v in each.value.attributes.setup : k => v if v != null }
+  })
+
+  depends_on = [module.secret_manager_spec]
+}
+
+module "secret_manager_channels" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/parameter_storage_definition_agent_association?ref=v6.3.0"
+
+  for_each = { for key, instance in var.instances : key => instance if instance.enable_notification_channel }
+
+  nrn            = each.value.nrn
+  api_key        = module.secret_manager_api_keys[each.key].api_key
+  tags_selectors = each.value.tags_selectors
+
+  depends_on = [module.secret_manager_spec]
+}

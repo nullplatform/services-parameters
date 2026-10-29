@@ -1,0 +1,95 @@
+#!/bin/bash
+set -euo pipefail
+
+# Validates Azure Key Vault connection config and authenticates.
+#
+# Auth is a service-principal client-credentials OAuth2 flow against Azure AD,
+# done with curl against the REST API — no Azure CLI (and therefore no runtime
+# CLI install) is required. The client secret is URL-encoded from the environment
+# and sent in the token request body via stdin, so it never appears on argv.
+# setup exchanges the credentials for a short-lived bearer token and exports it
+# as AZ_ACCESS_TOKEN, so store/retrieve/delete call the Key Vault data-plane REST
+# API with the Authorization header and no knowledge of how the token was obtained.
+#
+# Assumes the Azure public cloud endpoints (login.microsoftonline.com,
+# <vault>.vault.azure.net).
+#
+# Exports: AZ_VAULT_NAME, AZ_VAULT_URL, AZ_ACCESS_TOKEN
+
+AZ_VAULT_NAME=$(get_config_value \
+  --env AZURE_KEY_VAULT_NAME \
+  --provider '.setup.vault_name')
+
+if [ -z "$AZ_VAULT_NAME" ]; then
+  log error "❌ Azure Key Vault name not configured"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • AZURE_KEY_VAULT_NAME env var is not set"
+  log error "   • .vault_name is missing in the azure-key-vault provider config"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Set AZURE_KEY_VAULT_NAME=<your-vault-name>"
+  log error "   • Or set .vault_name in the provider config attributes"
+  exit 1
+fi
+
+AZ_VAULT_URL="https://${AZ_VAULT_NAME}.vault.azure.net"
+
+# Service-principal credentials are sensitive → env only, never provider config.
+AZURE_CLIENT_ID=$(get_config_value --env AZURE_CLIENT_ID)
+AZURE_CLIENT_SECRET=$(get_config_value --env AZURE_CLIENT_SECRET)
+AZURE_TENANT_ID=$(get_config_value --env AZURE_TENANT_ID)
+
+if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ] || [ -z "$AZURE_TENANT_ID" ]; then
+  log error "❌ Azure service principal credentials not configured"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID are not all set in the agent runtime"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Set all three env vars (the client secret is sensitive — env only, never provider config)"
+  exit 1
+fi
+
+# Build the token request body. The client secret is URL-encoded straight from
+# the environment via jq (env.*), so it never lands on argv; the whole body is
+# sent to curl on stdin.
+token_body="grant_type=client_credentials&scope=https%3A%2F%2Fvault.azure.net%2F.default"
+token_body="${token_body}&client_id=$(jq -rn 'env.AZURE_CLIENT_ID | @uri')"
+token_body="${token_body}&client_secret=$(jq -rn 'env.AZURE_CLIENT_SECRET | @uri')"
+
+token_file=$(mktemp)
+http_code=$(curl -s -o "$token_file" -w '%{http_code}' \
+  -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data @- <<<"$token_body") || http_code="000"
+token_resp=$(cat "$token_file")
+rm -f "$token_file"
+
+if [ "$http_code" != "200" ]; then
+  log error "❌ Azure service principal authentication failed (HTTP $http_code)"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID are wrong or the secret expired"
+  log error "   • The token endpoint (login.microsoftonline.com) is unreachable from the agent"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Verify the service principal credentials passed to the agent"
+  if [ "$http_code" = "000" ]; then
+    log error "Underlying error: could not connect to login.microsoftonline.com — no HTTP response (the agent has no network egress to Azure AD; this endpoint cannot be reached via a private endpoint)"
+  else
+    log error "Underlying error: $(echo "$token_resp" | jq -r '.error_description // .error // "unknown error"' 2>/dev/null | head -1)"
+  fi
+  exit 1
+fi
+
+AZ_ACCESS_TOKEN=$(echo "$token_resp" | jq -r '.access_token // empty' 2>/dev/null || true)
+if [ -z "$AZ_ACCESS_TOKEN" ]; then
+  log error "❌ Azure token endpoint returned no access_token"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Confirm the service principal has a valid client secret and the scope https://vault.azure.net/.default"
+  exit 1
+fi
+
+export AZ_VAULT_NAME AZ_VAULT_URL AZ_ACCESS_TOKEN

@@ -1,0 +1,51 @@
+nrn        = "organization=acme-1255165411:account=prod-95118862"
+np_api_key = "REPLACE_ME"
+
+extra_visible_to_nrns = []
+
+# Optional overrides (defaults defined in variables.tf):
+# template_path                            = "parameters/providers/hashicorp-vault/specs/install/hashicorp-vault-configuration.json.tpl"
+# repository_parameter_storage_spec_branch = "main"
+# repository_parameter_storage_spec        = "https://raw.githubusercontent.com/nullplatform/parameters-provider/refs/heads"
+
+instances = {
+  prod-billing = {
+    nrn                         = "organization=acme-1255165411:account=prod-95118862:namespace=billing-37094320"
+    dimensions                  = { environment = "production" }
+    enable_notification_channel = true # create the agent API key + notification channel (default false)
+    tags_selectors              = { environment = "production" }
+    attributes = {
+      sensibility = {
+        applies_to = ["secret", "non_secret"]
+      }
+      setup = {
+        address = "https://vault.prod.example.com:8200"
+        # namespace is the Vault Enterprise namespace; omit it for the root namespace (Vault OSS).
+        # namespace = "admin/eks-null-alfa-136"
+        # path_prefix is the KV v2 "<mount>/data/<subpath>" prefix; defaults to "secret/data/nullplatform"
+        # when omitted. Keep the KV v2 "data/" segment (e.g. "secret/data/acme-billing"):
+        # path_prefix = "secret/data/acme-billing"
+        # auth_mode defaults to "userpass": the agent reads VAULT_USERNAME / VAULT_PASSWORD from env.
+      }
+    }
+  }
+  staging-billing = {
+    nrn        = "organization=acme-1255165411:account=staging-95118863:namespace=billing-37094320"
+    dimensions = { environment = "staging" }
+    attributes = {
+      sensibility = {
+        applies_to = ["secret", "non_secret"]
+      }
+      setup = {
+        address = "https://vault.staging.example.com:8200"
+        # Custom KV path prefix — parameters are stored under secret/data/acme-staging/...
+        path_prefix = "secret/data/acme-staging"
+        # Kubernetes auth: the agent uses its pod ServiceAccount identity — no credentials in env.
+        # kubernetes_role must match the Vault role bound to the agent's ServiceAccount.
+        # Provision the cluster-side resources with the requirements/ module.
+        auth_mode       = "kubernetes"
+        kubernetes_role = "nullplatform-agent"
+      }
+    }
+  }
+}

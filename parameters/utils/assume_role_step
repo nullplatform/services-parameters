@@ -1,0 +1,126 @@
+#!/bin/bash
+# Dedicated workflow step: resolve the target IAM role and assume it, exporting
+# temporary credentials so every subsequent step inherits them.
+#
+# Provider-agnostic. The caller's setup MUST set these three variables BEFORE
+# sourcing this script (none have defaults — being explicit is part of the
+# contract):
+#
+#   ASSUME_ROLE_SELECTOR        — selector key under .iam_role_arns.arns[] in
+#                                 the IAM provider (e.g. "secret_manager",
+#                                 "aws-parameter-store").
+#   ASSUME_ROLE_OVERRIDE_ENV    — name of the env var that, when set, overrides
+#                                 the IAM-provider lookup
+#                                 (e.g. "SECRET_MANAGER_ASSUME_ROLE_ARN").
+#   ASSUME_ROLE_DEFAULT_ENV     — name of the env var consulted as the agent's
+#                                 per-account default if no other source yields
+#                                 an ARN (e.g. "SECRET_MANAGER_ASSUME_ROLE_ARN_DEFAULT").
+#
+# Optional:
+#   ASSUME_ROLE_SESSION_PREFIX  — prefix for the STS session name. Defaults to
+#                                 "np-parameters".
+#
+# Output (exported for downstream scripts):
+#   ASSUME_ROLE_ARN_RESOLVED    — the final ARN, or empty for "use agent creds".
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN — set when an
+#                                 ARN was resolved and sts:AssumeRole succeeded.
+#
+# Unlike the k8s flow — where the platform pre-resolves the IAM provider into
+# CONTEXT.providers["identity-access-control"] using the scope's dimensions —
+# parameter actions don't get the IAM provider in the payload. This step fetches
+# it via `np provider list --categories identity-access-control` (passing `--nrn`
+# and, when present, `--dimensions`) so the platform performs the same
+# dimension-aware resolution it would do for k8s scopes.
+#
+# NRN + dimensions are computed here, directly from the payload:
+#   - NRN: value_entities present → includes scope segment (`...:scope=<id>`);
+#          else app-level (organization=…:account=…:namespace=…:application=…)
+#   - dimensions: $CONTEXT.value_dimensions (scope-level) → $CONTEXT.dimensions
+#          (dim-level) → none (NRN-only lookup). Slugs/dimensions all travel in
+#          the payload, so no `np scope read` is needed.
+#
+# Only providers that assume a cloud IAM role source this step (the AWS
+# providers, via their `setup`). Providers that authenticate differently
+# (e.g. HashiCorp Vault, Azure Key Vault) don't source it, so the
+# `np provider list` lookup never fires for them.
+#
+# ARN resolution precedence (see resolve_assume_role_arn in assume_role_lib):
+#   ${!ASSUME_ROLE_OVERRIDE_ENV} -> IAM provider by selector
+#     -> ${!ASSUME_ROLE_DEFAULT_ENV} -> agent credentials
+#
+# Requires: aws CLI, jq, np CLI. Expects: CONTEXT (engine-injected),
+# SCOPE_ID (optional).
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/assume_role_lib"
+
+# --- 0. Contract: caller must supply selector + env-var names ---------------
+: "${ASSUME_ROLE_SELECTOR:?ASSUME_ROLE_SELECTOR must be set by the caller (e.g. 'secret_manager' or 'aws-parameter-store')}"
+: "${ASSUME_ROLE_OVERRIDE_ENV:?ASSUME_ROLE_OVERRIDE_ENV must be set by the caller (name of the override env var)}"
+: "${ASSUME_ROLE_DEFAULT_ENV:?ASSUME_ROLE_DEFAULT_ENV must be set by the caller (name of the default-fallback env var)}"
+
+# Session prefix for the STS session name (informational).
+export ASSUME_ROLE_SESSION_PREFIX="${ASSUME_ROLE_SESSION_PREFIX:-np-parameters}"
+
+# SCOPE_ID is used by assume_role only for the STS session-name suffix.
+# Pull it from the same source NRN was built from (entities/value_entities).
+if [ -z "${SCOPE_ID:-}" ]; then
+  SCOPE_ID=$(echo "${CONTEXT:-}" | jq -r '(.value_entities // .entities // {}).scope // empty' 2>/dev/null)
+  export SCOPE_ID
+fi
+
+# --- IAM provider lookup ----------------------------------------------------
+# NRN + dimensions come straight from the payload (no `np scope read`).
+# value_entities (scope-level) wins over entities (app/dim-level);
+# organization/account/namespace/application are always present, scope only for
+# scope-level payloads.
+NRN=$(echo "${CONTEXT:-}" | jq -r '
+  (.value_entities // .entities) |
+  [
+    ("organization=" + .organization),
+    ("account=" + .account),
+    ("namespace=" + .namespace),
+    ("application=" + .application)
+  ]
+  + (if .scope then [("scope=" + .scope)] else [] end)
+  | join(":")')
+
+# Dimensions: .value_dimensions (scope-level) → .dimensions (dim-level) → none.
+DIMS_JSON=$(echo "${CONTEXT:-}" | jq -c '.value_dimensions // .dimensions // empty')
+DIMS_ARG=""
+if [ -n "$DIMS_JSON" ] && [ "$DIMS_JSON" != "null" ] && [ "$DIMS_JSON" != "{}" ]; then
+  DIMS_ARG=$(printf '%s' "$DIMS_JSON" | jq -r 'to_entries | map("\(.key):\(.value)") | join(",")')
+fi
+
+log debug "🔎 IAM lookup (NRN=$NRN${DIMS_ARG:+ dims=$DIMS_ARG})"
+IAM_ATTRIBUTES=""
+if [ -n "$NRN" ]; then
+  iam_args=(--categories identity-access-control --nrn "$NRN" --format json)
+  [ -n "$DIMS_ARG" ] && iam_args+=(--dimensions "$DIMS_ARG")
+  if iam_json=$(np provider list "${iam_args[@]}" 2>&1); then
+    IAM_ATTRIBUTES=$(jq -c '.results[0].attributes // {}' <<<"$iam_json" 2>/dev/null)
+  else
+    log warn "   ⚠️  IAM provider lookup failed: $iam_json"
+  fi
+fi
+
+# --- 4. Resolve and export the ARN -----------------------------------------
+ASSUME_ROLE_ARN_RESOLVED=$(resolve_assume_role_arn \
+  "$IAM_ATTRIBUTES" \
+  "$ASSUME_ROLE_SELECTOR" \
+  "$ASSUME_ROLE_OVERRIDE_ENV" \
+  "$ASSUME_ROLE_DEFAULT_ENV")
+export ASSUME_ROLE_ARN_RESOLVED
+
+# --- 5. Perform the assume-role (no-op if ARN is empty) --------------------
+if ! source "$SCRIPT_DIR/assume_role"; then
+  log error "   ❌ assume_role step failed: could not assume $ASSUME_ROLE_ARN_RESOLVED"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The agent's role is not allowed to sts:AssumeRole the target role"
+  log error "   • The target role does not exist or does not trust the agent role"
+  log error "   • No role ARN configured for selector=$ASSUME_ROLE_SELECTOR"
+  log error "     in the IAM provider for NRN=$NRN"
+  log error ""
+  exit 1
+fi

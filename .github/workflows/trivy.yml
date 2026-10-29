@@ -24,5 +24,5 @@ jobs:
     uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@v1
     with:
       context: .
-      image_name: my-service
+      image_name: parameters
       exit_code: 0

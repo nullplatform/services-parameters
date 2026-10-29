@@ -1,0 +1,221 @@
+#!/bin/bash
+set -euo pipefail
+
+# Validates HashiCorp Vault connection config and authenticates.
+#
+# Two authentication modes (selected via .setup.auth_mode / VAULT_AUTH_MODE):
+#
+#   userpass    Username/password (Vault "userpass" auth). Credentials are
+#               sensitive and come from env only (VAULT_USERNAME, VAULT_PASSWORD)
+#               — never from provider config.
+#   kubernetes  The pod's ServiceAccount identity (Vault "kubernetes" auth). No
+#               secrets to configure: the SA JWT is read from the projected token
+#               file and exchanged for a Vault token bound to a Vault role.
+#
+# Either way setup exchanges the credentials/identity for a short-lived Vault
+# client token via the login endpoint and exports it as VAULT_TOKEN, so
+# store/retrieve/delete keep using the X-Vault-Token header with no knowledge of
+# how the token was obtained.
+#
+# Two independent config axes:
+#
+#   VAULT_NAMESPACE   The Vault Enterprise namespace (e.g. `admin/eks-null-alfa-136`).
+#                     Operator-configurable via .setup.namespace / VAULT_NAMESPACE.
+#                     Empty means the root namespace — backward compatible with
+#                     non-Enterprise deployments. It is applied as a URL prefix
+#                     (`$VAULT_ADDR/v1/<namespace>/...`) on login AND on every
+#                     store/retrieve/delete request; Vault resolves the leading
+#                     path segments to the namespace before routing to the mount.
+#
+#   VAULT_PATH_PREFIX The KV v2 path prefix RELATIVE to the namespace, i.e. the
+#                     full `<mount>/data/<subpath>` (e.g. `secret/data/nullplatform`).
+#                     It MUST include the mount and the KV v2 `data` segment.
+#                     Defaults to `secret/data/nullplatform`. store embeds it in
+#                     the external_id, so references survive a path_prefix change.
+#
+# The two are kept separate because a KV v2 path inside a namespace is
+# `<namespace>/<mount>/data/<subpath>` — the mount name sits between the namespace
+# and `data`, so a single field cannot encode both without ambiguity (which broke
+# read/write on Enterprise namespaces). The auth mounts are hardcoded to Vault's
+# defaults (auth/userpass, auth/kubernetes); VAULT_ADDR is operator-configurable.
+#
+# On Vault Enterprise, credentials/roles are scoped to the namespace, so the login
+# must target it too — otherwise Vault returns "access denied".
+#
+# Exports: VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_PATH_PREFIX
+
+VAULT_DEFAULT_PATH_PREFIX="secret/data/nullplatform"
+
+VAULT_ADDR=$(get_config_value --env VAULT_ADDR --provider '.setup.address')
+VAULT_AUTH_MODE=$(get_config_value --env VAULT_AUTH_MODE --provider '.setup.auth_mode' --default "userpass")
+VAULT_NAMESPACE=$(get_config_value --env VAULT_NAMESPACE --provider '.setup.namespace' --default "")
+VAULT_PATH_PREFIX=$(get_config_value --env VAULT_PATH_PREFIX --provider '.setup.path_prefix' --default "$VAULT_DEFAULT_PATH_PREFIX")
+# Trim surrounding slashes so URL composition never doubles them.
+VAULT_NAMESPACE="${VAULT_NAMESPACE#/}"
+VAULT_NAMESPACE="${VAULT_NAMESPACE%/}"
+VAULT_PATH_PREFIX="${VAULT_PATH_PREFIX%/}"
+
+# Defense-in-depth: both values are interpolated raw into request URLs (the login
+# call and every store/retrieve/delete). They are multi-segment paths where `/` is
+# significant, so we validate rather than URL-encode (unlike the single-segment
+# username, which is @uri-encoded): allow only Vault-legal path characters and
+# reject `..` segments that could rewrite the request path. Values are operator
+# config, so this guards against misconfiguration, not attacker input.
+validate_vault_path_config() {
+  local name="$1" value="$2"
+  [ -z "$value" ] && return 0
+  if [[ "$value" == *".."* ]] || [[ "$value" =~ [^A-Za-z0-9._/-] ]]; then
+    log error "❌ Invalid Vault $name: '$value'"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • .setup.$name contains characters outside [A-Za-z0-9._/-] or a '..' segment"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Use only letters, digits, '.', '_', '-' and '/' path separators"
+    exit 1
+  fi
+}
+validate_vault_path_config namespace "$VAULT_NAMESPACE"
+validate_vault_path_config path_prefix "$VAULT_PATH_PREFIX"
+
+# API base for the login call — namespace-prefixed on Vault Enterprise, plain
+# otherwise. store/retrieve/delete compose the same namespace prefix themselves.
+VAULT_LOGIN_BASE="$VAULT_ADDR/v1"
+if [ -n "$VAULT_NAMESPACE" ]; then
+  VAULT_LOGIN_BASE="$VAULT_ADDR/v1/$VAULT_NAMESPACE"
+fi
+
+if [ -z "$VAULT_ADDR" ]; then
+  log error "❌ Vault address not configured"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • VAULT_ADDR env var is not set in the workflow runtime"
+  log error "   • .address is missing in the hashicorp-vault provider config"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Set VAULT_ADDR=https://your-vault-host"
+  log error "   • Or set .address in the provider config attributes"
+  exit 1
+fi
+
+# Build the login request (URL + JSON payload) for the selected auth mode.
+case "$VAULT_AUTH_MODE" in
+  userpass)
+    VAULT_USERNAME=$(get_config_value --env VAULT_USERNAME)
+    VAULT_PASSWORD=$(get_config_value --env VAULT_PASSWORD)
+
+    if [ -z "$VAULT_USERNAME" ]; then
+      log error "❌ Vault username not configured"
+      log error ""
+      log error "💡 Possible causes:"
+      log error "   • VAULT_USERNAME env var is not set in the agent runtime"
+      log error ""
+      log error "🔧 How to fix:"
+      log error "   • Set VAULT_USERNAME=<your-user> in the agent environment"
+      exit 1
+    fi
+
+    if [ -z "$VAULT_PASSWORD" ]; then
+      log error "❌ Vault password not configured"
+      log error ""
+      log error "💡 Possible causes:"
+      log error "   • VAULT_PASSWORD env var is not set in the agent runtime"
+      log error ""
+      log error "🔧 How to fix:"
+      log error "   • Set VAULT_PASSWORD=<your-password> in the agent environment"
+      log error "   • The password is sensitive — set via env, never via provider config"
+      exit 1
+    fi
+
+    # URL-encode the username — it is interpolated as a path segment of the login URL.
+    VAULT_USERNAME_ENC=$(jq -rn --arg u "$VAULT_USERNAME" '$u | @uri')
+    LOGIN_URL="$VAULT_LOGIN_BASE/auth/userpass/login/$VAULT_USERNAME_ENC"
+    LOGIN_PAYLOAD=$(jq -nc --arg password "$VAULT_PASSWORD" '{password: $password}')
+    ;;
+
+  kubernetes)
+    VAULT_K8S_ROLE=$(get_config_value --env VAULT_K8S_ROLE --provider '.setup.kubernetes_role')
+    VAULT_K8S_JWT_PATH=$(get_config_value --env VAULT_K8S_JWT_PATH \
+      --default "/var/run/secrets/kubernetes.io/serviceaccount/token")
+
+    if [ -z "$VAULT_K8S_ROLE" ]; then
+      log error "❌ Vault Kubernetes role not configured"
+      log error ""
+      log error "💡 Possible causes:"
+      log error "   • .setup.kubernetes_role is missing in the provider config"
+      log error "   • VAULT_K8S_ROLE env var is not set in the agent runtime"
+      log error ""
+      log error "🔧 How to fix:"
+      log error "   • Set .setup.kubernetes_role to the Vault role bound to the agent's ServiceAccount"
+      log error "   • See the provider README for the required Vault + cluster setup"
+      exit 1
+    fi
+
+    if [ ! -r "$VAULT_K8S_JWT_PATH" ]; then
+      log error "❌ Kubernetes ServiceAccount token not readable at $VAULT_K8S_JWT_PATH"
+      log error ""
+      log error "💡 Possible causes:"
+      log error "   • The agent pod has automountServiceAccountToken disabled"
+      log error "   • A custom projected-token path is used but VAULT_K8S_JWT_PATH is not set"
+      log error ""
+      log error "🔧 How to fix:"
+      log error "   • Ensure the pod mounts its ServiceAccount token"
+      log error "   • Or set VAULT_K8S_JWT_PATH to the projected token file"
+      exit 1
+    fi
+
+    VAULT_K8S_JWT=$(<"$VAULT_K8S_JWT_PATH")
+    LOGIN_URL="$VAULT_LOGIN_BASE/auth/kubernetes/login"
+    LOGIN_PAYLOAD=$(jq -nc --arg role "$VAULT_K8S_ROLE" --arg jwt "$VAULT_K8S_JWT" '{role: $role, jwt: $jwt}')
+    ;;
+
+  *)
+    log error "❌ Unknown Vault authentication mode '$VAULT_AUTH_MODE'"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • .setup.auth_mode (or VAULT_AUTH_MODE) has an unsupported value"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Set auth_mode to one of: userpass, kubernetes"
+    exit 1
+    ;;
+esac
+
+# Exchange credentials/identity for a short-lived client token. The payload
+# carries the password / ServiceAccount JWT, so it is sent via stdin (--data @-)
+# rather than argv, keeping the secret out of the process table (ps / /proc).
+if ! LOGIN_RESPONSE=$(curl -s -X POST "$LOGIN_URL" --data @- <<<"$LOGIN_PAYLOAD"); then
+  log error "❌ Failed to authenticate to Vault at $VAULT_ADDR"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • Network unreachable to $VAULT_ADDR"
+  log error "   • TLS handshake failure"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Test connectivity: curl -s $VAULT_ADDR/v1/sys/health"
+  exit 1
+fi
+
+# Guard the parse: a non-JSON body (proxy/LB error page, sealed Vault) must fall
+# through to the troubleshooting block below, not abort under `set -o pipefail`.
+VAULT_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r '.auth.client_token // empty' 2>/dev/null || true)
+
+if [ -z "$VAULT_TOKEN" ]; then
+  log error "❌ Vault $VAULT_AUTH_MODE login did not return a token"
+  log error ""
+  log error "💡 Possible causes:"
+  if [ "$VAULT_AUTH_MODE" = "userpass" ]; then
+    log error "   • Wrong VAULT_USERNAME / VAULT_PASSWORD"
+    log error "   • The userpass auth method is not enabled (vault auth enable userpass)"
+  else
+    log error "   • The Vault role '$VAULT_K8S_ROLE' does not exist or does not bind this pod's ServiceAccount"
+    log error "   • The kubernetes auth method is not enabled or configured (vault auth enable kubernetes)"
+  fi
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • See the provider README for the required Vault + cluster setup"
+  log error "Vault error: $(echo "$LOGIN_RESPONSE" | jq -r '(.errors // ["unknown error"]) | join("; ")' 2>/dev/null || echo "unknown error")"
+  exit 1
+fi
+
+export VAULT_ADDR VAULT_TOKEN VAULT_NAMESPACE VAULT_PATH_PREFIX

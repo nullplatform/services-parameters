@@ -1,0 +1,18 @@
+# Pin the target cluster so the cluster-wide RBAC binding isn't applied to the
+# wrong context (kubernetes_manifest reaches the cluster at plan time):
+# kube_config_context = "my-prod-cluster"
+# kube_config_path    = "~/.kube/config"
+
+kubernetes_auth = {
+  enable                     = true
+  agent_namespace            = "nullplatform"
+  agent_service_account_name = "nullplatform-agent"
+
+  # Token reviewer defaults: name "vault-auth", namespace = agent_namespace.
+  # Override if Vault reviews tokens with a ServiceAccount in another namespace:
+  # token_reviewer_service_account_name = "vault-auth"
+  # token_reviewer_namespace            = "vault"
+
+  # Set false if the agent ServiceAccount is already managed by its Helm chart:
+  # create_agent_service_account = false
+}

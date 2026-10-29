@@ -1,0 +1,31 @@
+# Create the Key Vault this provider stores parameters in.
+# key_vault.name MUST match the runtime provider config `vault_name`
+# (and AZURE_KEY_VAULT_NAME) — the coupling is by name, not by reference.
+key_vault = {
+  enable              = true
+  name                = "acme-prod-nullplatform-kv"
+  resource_group_name = "acme-prod"
+  location            = "eastus"
+  # sku_name                      = "standard" # default; "premium" for HSM-backed keys
+  # purge_protection_enabled      = true       # default (hardened)
+  # soft_delete_retention_days    = 90          # default
+  # public_network_access_enabled = true        # set false for private-endpoint-only access
+  # network_acls = {
+  #   # default_action defaults to "Deny" — ip_rules act as an allow-list
+  #   ip_rules = ["203.0.113.0/24"]
+  # }
+}
+
+# Grant the client's EXISTING service principal access to the vault. This module
+# only assigns the role — it does not create the SP or touch its secret. When
+# both blocks are enabled, the vault created above is scoped to this SP
+# automatically; key_vault_ids is only for additional, pre-existing vaults.
+# The SP's client_id / client_secret / tenant_id go to the agent directly.
+service_principal = {
+  enable    = true
+  client_id = "00000000-0000-0000-0000-000000000000" # existing SP application (client) id
+  # key_vault_ids = [
+  #   "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/acme-prod/providers/Microsoft.KeyVault/vaults/other-existing-kv",
+  # ]
+  # role = "Key Vault Secrets Officer" # default
+}

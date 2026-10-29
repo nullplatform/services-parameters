@@ -1,0 +1,24 @@
+# project_id and name_prefix MUST match the runtime provider config
+# (setup.project_id / setup.name_prefix) — the coupling is by name.
+project_id  = "acme-prod-secrets"
+name_prefix = "nullplatform"
+
+# The agent's KSA, granted through GKE Workload Identity Federation (default).
+kubernetes_service_account = {
+  enable    = true
+  namespace = "nullplatform-tools"
+  name      = "nullplatform-agent"
+  # When the cluster is in another project, set its pool. The principal uses that
+  # project's number: looked up automatically, or set it to skip the lookup.
+  # workload_pool                = "acme-gke-host.svc.id.goog"
+  # workload_pool_project_number = "123456789012"
+}
+
+# Extra members with the same conditional access, e.g. an agent outside GKE:
+# members = ["serviceAccount:np-agent@acme-prod-secrets.iam.gserviceaccount.com"]
+
+# Least-privilege custom role (default). Disable to grant a predefined role instead:
+# custom_role = { enable = false }
+# role        = "roles/secretmanager.admin"
+
+# enable_api = true # enable secretmanager.googleapis.com from here

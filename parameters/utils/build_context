@@ -1,0 +1,99 @@
+#!/bin/bash
+set -euo pipefail
+
+# Resolves which provider implementation handles this workflow run.
+#
+# Inputs:
+#   CONTEXT — JSON of the notification body (set by entrypoint)
+#
+# Flow:
+#   1. Extract notification fields into env vars
+#   2. Derive PARAMETER_KIND from $CONTEXT.secret (still useful for providers
+#      like aws-parameter-store that choose String vs SecureString)
+#   3. Resolve ACTIVE_PROVIDER from $CONTEXT.provider.specification_id via
+#      `np provider specification read` — its `.slug` IS the provider directory name
+#   4. Set PROVIDER_CONFIG from $CONTEXT.provider.attributes (config travels in
+#      the payload — no separate fetch_configuration step needed)
+#   5. Source providers/<active>/setup (validates provider-specific config and
+#      exports connection handles)
+#
+# Outputs (exported for downstream workflow steps):
+#   PARAMETERS_ROOT, ACTIVE_PROVIDER, PROVIDER_DIR, PARAMETER_KIND
+#   PROVIDER_CONFIG, EXTERNAL_ID, PARAMETER_ID, PARAMETER_VALUE
+#   PARAMETER_NAME, PARAMETER_ENCODING
+#   Plus anything the provider's setup exports (VAULT_ADDR, AWS_REGION, etc.)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# build_context lives under utils/; PARAMETERS_ROOT is the parent (parameters/)
+export PARAMETERS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+source "$SCRIPT_DIR/log"
+source "$SCRIPT_DIR/get_config_value"
+
+# --- Notification fields ---
+export EXTERNAL_ID=$(echo "$CONTEXT" | jq -r '.external_id // empty')
+# external_id format: <canonical_path>#<version_id>
+# Split into path (used for backend naming) and version (optional, used by retrieve).
+# Store rebuilds EXTERNAL_ID after the backend returns the new version_id.
+if [[ "$EXTERNAL_ID" == *"#"* ]]; then
+  export EXTERNAL_ID_PATH="${EXTERNAL_ID%#*}"
+  export EXTERNAL_ID_VERSION="${EXTERNAL_ID##*#}"
+else
+  export EXTERNAL_ID_PATH="$EXTERNAL_ID"
+  export EXTERNAL_ID_VERSION=""
+fi
+export PARAMETER_ID=$(echo "$CONTEXT" | jq -r '.parameter_id // empty')
+export PARAMETER_VALUE=$(echo "$CONTEXT" | jq -r '.value // empty')
+export PARAMETER_NAME=$(echo "$CONTEXT" | jq -r '.parameter_name // empty')
+export PARAMETER_ENCODING=$(echo "$CONTEXT" | jq -r '.encoding // empty')
+
+case "$(echo "$CONTEXT" | jq -r '.secret | tostring')" in
+  true)  PARAMETER_KIND="secret" ;;
+  false) PARAMETER_KIND="parameter" ;;
+  *)     PARAMETER_KIND="" ;;
+esac
+export PARAMETER_KIND
+
+# --- Resolve ACTIVE_PROVIDER ---
+# The platform ships .provider.specification_slug in the payload; use it directly.
+ACTIVE_PROVIDER=$(echo "$CONTEXT" | jq -r '.provider.specification_slug // empty')
+SPEC_ID=$(echo "$CONTEXT" | jq -r '.provider.specification_id // empty')
+
+if [ -z "$ACTIVE_PROVIDER" ]; then
+  log error "❌ Missing .provider.specification_slug in CONTEXT"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The notification payload is malformed"
+  log error "   • The parameter has no associated provider in nullplatform"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Verify the parameter has a provider configured"
+  exit 1
+fi
+
+PROVIDER_DIR="$PARAMETERS_ROOT/providers/$ACTIVE_PROVIDER"
+if [ ! -d "$PROVIDER_DIR" ]; then
+  available=$(ls "$PARAMETERS_ROOT/providers" 2>/dev/null | grep -v '^README' | tr '\n' ' ' || true)
+  log error "❌ Provider implementation not found for slug '$ACTIVE_PROVIDER'"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The provider specification slug doesn't match any installed provider"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Available providers: ${available:-(none installed)}"
+  log error "   • Rename the spec slug, or add a provider at parameters/providers/$ACTIVE_PROVIDER/"
+  exit 1
+fi
+export ACTIVE_PROVIDER
+export PROVIDER_DIR
+
+# --- PROVIDER_CONFIG comes directly from the payload (no fetch needed) ---
+export PROVIDER_CONFIG=$(echo "$CONTEXT" | jq -c '.provider.attributes // {}')
+
+log debug "📦 active_provider=$ACTIVE_PROVIDER kind=$PARAMETER_KIND spec_id=$SPEC_ID"
+
+# --- Source provider's setup for validation + connection handles ---
+if [ -f "$PROVIDER_DIR/setup" ]; then
+  log debug "📡 Sourcing $ACTIVE_PROVIDER/setup"
+  source "$PROVIDER_DIR/setup"
+fi

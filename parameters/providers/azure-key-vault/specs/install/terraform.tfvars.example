@@ -1,0 +1,40 @@
+nrn        = "organization=1:account=2"
+np_api_key = "REPLACE_ME"
+
+extra_visible_to_nrns = []
+
+# Optional overrides (defaults defined in variables.tf):
+# template_path                            = "parameters/providers/azure-key-vault/specs/install/azure-key-vault-configuration.json.tpl"
+# repository_parameter_storage_spec_branch = "main"
+# repository_parameter_storage_spec        = "https://raw.githubusercontent.com/nullplatform/parameters-provider/refs/heads"
+
+instances = {
+  prod-billing = {
+    nrn        = "organization=1:account=2:namespace=3"
+    dimensions = { environment = "production" }
+    # Each instance gets its own agent API key + notification channel anchored at its nrn (default).
+    tags_selectors = { environment = "production" }
+    attributes = {
+      sensibility = {
+        applies_to = ["secret"]
+      }
+      setup = {
+        vault_name = "acme-prod-billing-kv"
+      }
+    }
+  }
+  staging-billing = {
+    nrn        = "organization=1:account=2:namespace=3"
+    dimensions = { environment = "staging" }
+    # Skip the agent channel + API key for this instance (e.g. managed elsewhere).
+    enable_notification_channel = false
+    attributes = {
+      sensibility = {
+        applies_to = ["secret"]
+      }
+      setup = {
+        vault_name = "acme-staging-billing-kv"
+      }
+    }
+  }
+}
