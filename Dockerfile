@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Worker image: the bridge runs the entrypoint on every action. Add the tools your steps need.
-FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.1
+FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.7
 
 # --chown: np chmods the action script in place, so the tree must belong to the runtime uid.
 COPY --chown=10001:10001 . /app/pkg
