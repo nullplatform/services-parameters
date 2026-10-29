@@ -59,7 +59,7 @@ jobs:
     needs: preflight
     uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
     with:
-      image_name: agent-plugins/services/my-service
+      image_name: agent-plugins/services/parameters
       # latest always points at the last release; pull requests publish to beta/ instead.
       also_tag_latest: true
       existing_tag: ${{ inputs.existing_tag || '' }}

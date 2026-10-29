@@ -1,0 +1,49 @@
+#!/bin/bash
+set -euo pipefail
+
+# Validates AWS Systems Manager Parameter Store connection config.
+#
+# AWS_REGION is injected by the agent's runtime, not by provider config.
+# The name prefix is hardcoded to `/nullplatform/` — invariant namespace for
+# all platform parameters.
+#
+# Operator-configurable: kms_key_id (for SecureString) and tier.
+#
+# Required env (from build_context):
+#   PARAMETER_KIND — "secret" or "parameter"; determines String vs SecureString
+#
+# Exports: AWS_REGION, PS_NAME_PREFIX, PS_KMS_KEY_ID, PS_TIER
+
+: "${AWS_REGION:?AWS_REGION must be set by the agent runtime}"
+
+# Resolve and assume the platform-configured IAM role (if any). After this,
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN are set in the
+# environment, so every subsequent aws-cli call inherits the assumed identity.
+ASSUME_ROLE_SELECTOR="parameter_store"
+ASSUME_ROLE_OVERRIDE_ENV="PARAMETER_STORE_ASSUME_ROLE_ARN"
+ASSUME_ROLE_DEFAULT_ENV="PARAMETER_STORE_ASSUME_ROLE_ARN_DEFAULT"
+ASSUME_ROLE_SESSION_PREFIX="np-parameter-store"
+source "$PARAMETERS_ROOT/utils/assume_role_step"
+
+PS_NAME_PREFIX="/nullplatform/"
+
+PS_KMS_KEY_ID=$(get_config_value \
+  --provider '.setup.kms_key_id' \
+  --default '')
+
+PS_TIER=$(get_config_value \
+  --provider '.setup.tier' \
+  --default 'Standard')
+
+case "$PS_TIER" in
+  Standard|Advanced|Intelligent-Tiering) ;;
+  *)
+    log error "❌ Invalid PS_TIER '$PS_TIER'"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Set PS_TIER to one of: Standard, Advanced, Intelligent-Tiering"
+    exit 1
+    ;;
+esac
+
+export AWS_REGION PS_NAME_PREFIX PS_KMS_KEY_ID PS_TIER

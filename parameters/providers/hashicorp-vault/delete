@@ -1,0 +1,62 @@
+#!/bin/bash
+set -euo pipefail
+
+# Deletes a secret from Vault by external_id.
+#
+# Idempotency semantics:
+#   - HTTP 2xx → success (deleted)
+#   - HTTP 404 → success (already gone; treated as idempotent)
+#   - Any other HTTP status or network error → exit 1 with troubleshooting
+#
+# Required env: EXTERNAL_ID, VAULT_ADDR, VAULT_TOKEN
+# Optional env: VAULT_NAMESPACE (Vault Enterprise namespace, applied as a URL prefix)
+
+# EXTERNAL_ID_PATH is the full, self-contained KV path (the KV prefix was embedded
+# by store), so it is used verbatim — never recomposed against the current
+# VAULT_PATH_PREFIX. This keeps references valid across setup.path_prefix changes.
+# The Vault namespace is not part of the path; it is applied from the current
+# config as a URL prefix.
+VAULT_PATH="$EXTERNAL_ID_PATH"
+
+NS_PREFIX=""
+[ -n "${VAULT_NAMESPACE:-}" ] && NS_PREFIX="${VAULT_NAMESPACE}/"
+
+if ! RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    "$VAULT_ADDR/v1/${NS_PREFIX}${VAULT_PATH}" 2>/dev/null); then
+  log error "❌ Network error calling Vault at $VAULT_ADDR"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • Vault host unreachable (DNS / network / firewall)"
+  log error "   • TLS handshake failure"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Test connectivity: curl -s $VAULT_ADDR/v1/sys/health"
+  exit 1
+fi
+
+HTTP_STATUS="${RESPONSE##*$'\n'}"
+
+case "$HTTP_STATUS" in
+  2*) ;;
+  404)
+    log debug "Secret at $VAULT_PATH does not exist, treating delete as success"
+    ;;
+  *)
+    HTTP_BODY="${RESPONSE%$'\n'*}"
+    log error "❌ Vault DELETE failed with HTTP $HTTP_STATUS at $VAULT_PATH"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • VAULT_TOKEN lacks delete permission at this path (403)"
+    log error "   • Server-side error (5xx) — check Vault logs"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify token: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/auth/token/lookup-self"
+    log error "Vault response: $HTTP_BODY"
+    exit 1
+    ;;
+esac
+
+echo '{
+  "success": true
+}'

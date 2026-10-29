@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+# Deletes a secret from Azure Key Vault via the REST API. Idempotent.
+# Soft-delete + purge (purge is best-effort, downgraded to warning on failure).
+#
+# The AKV secret name IS the external_id (built slug-free by store, no prefix or
+# transform), so EXTERNAL_ID_PATH is used verbatim as the secret name.
+#
+# Required env: EXTERNAL_ID_PATH, AZ_VAULT_NAME, AZ_VAULT_URL, AZ_ACCESS_TOKEN
+
+SECRET_NAME="$EXTERNAL_ID_PATH"
+
+# Soft-delete.
+resp_file=$(mktemp)
+http_code=$(curl -s -o "$resp_file" -w '%{http_code}' \
+  -X DELETE "$AZ_VAULT_URL/secrets/$SECRET_NAME?api-version=7.4" \
+  -H "Authorization: Bearer $AZ_ACCESS_TOKEN") || http_code="000"
+resp=$(cat "$resp_file")
+rm -f "$resp_file"
+
+if [ "$http_code" = "404" ]; then
+  log debug "Secret '$SECRET_NAME' does not exist, treating delete as success"
+  echo '{
+  "success": true
+}'
+  # Skip the purge — this is not an error, so `return` (don't `exit`): these
+  # scripts are sourced by the agent, and `exit` would abort the remaining steps.
+  return 0 2>/dev/null || exit 0
+elif [ "$http_code" != "200" ]; then
+  log error "❌ Failed to delete secret '$SECRET_NAME' from Azure Key Vault '$AZ_VAULT_NAME' (HTTP $http_code)"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The service principal lacks Delete permission on vault $AZ_VAULT_NAME"
+  log error "   • The vault firewall blocks the caller, or the token expired"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Confirm the SP has the Key Vault Secrets Officer role on the vault"
+  if [ "$http_code" = "000" ]; then
+    log error "Underlying error: could not connect to $AZ_VAULT_URL — no HTTP response (DNS, network egress, or the vault is unreachable: no route / no private endpoint from here)"
+  else
+    log error "Underlying error: $(echo "$resp" | jq -r '.error.message // "unknown error"' 2>/dev/null | head -1)"
+  fi
+  exit 1
+fi
+
+# Best-effort purge to release the name and stop retention billing. 404 means the
+# secret was not in the soft-delete bin (e.g. already purged) — not an error.
+purge_file=$(mktemp)
+purge_code=$(curl -s -o "$purge_file" -w '%{http_code}' \
+  -X DELETE "$AZ_VAULT_URL/deletedsecrets/$SECRET_NAME?api-version=7.4" \
+  -H "Authorization: Bearer $AZ_ACCESS_TOKEN") || purge_code="000"
+purge_resp=$(cat "$purge_file")
+rm -f "$purge_file"
+
+case "$purge_code" in
+  200 | 204 | 404) ;;
+  409)
+    # Purge protection is enabled on the vault (the hardened default), so the
+    # secret cannot be purged and stays in the soft-delete window until retention
+    # expiry. This is expected, not a failure — don't warn on every delete.
+    log debug "Purge protection enabled on '$AZ_VAULT_NAME'; secret remains in the soft-delete window until retention expiry"
+    ;;
+  403)
+    log warn "⚠️ Purge permission missing on '$AZ_VAULT_NAME' — secret remains in soft-delete window"
+    ;;
+  *)
+    log warn "⚠️ Purge failed (HTTP $purge_code; secret remains in soft-delete window): $(echo "$purge_resp" | jq -r '.error.message // "unknown"' 2>/dev/null | head -1)"
+    ;;
+esac
+
+echo '{
+  "success": true
+}'

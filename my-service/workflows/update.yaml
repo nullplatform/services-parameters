@@ -1,4 +1,0 @@
-steps:
-  - name: example
-    type: script
-    file: $SERVICE_PATH/scripts/example

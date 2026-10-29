@@ -6,3 +6,9 @@ Dockerfile
 **/.terraform
 **/*.tfstate*
 mise.toml
+Makefile
+docs
+testing
+parameters/tests
+**/docs
+**/specs

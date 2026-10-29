@@ -1,0 +1,121 @@
+#!/bin/bash
+set -euo pipefail
+
+# Stores a parameter as an Azure Key Vault secret via the data-plane REST API.
+#
+# Versioning model:
+#   nullplatform parameter values are immutable. Each update is a new VERSION.
+#   Azure Key Vault has native versioning — every PUT to a secret creates a new
+#   version, all retained inside the same secret. No special logic needed.
+#
+# Naming: the AKV secret name IS the external_id (no lossy transform, no prefix).
+# It is built slug-free from the entity path (NRN ids) + dimensions + parameter,
+# joined with dashes and sanitized to AKV's allowed charset ([A-Za-z0-9-]). Slugs
+# are dropped to stay within AKV's 127-char name limit — the entity ids already
+# identify the resource uniquely. See docs/architecture.md.
+#
+# Required env: CONTEXT (entities/dimensions/parameter), AZ_VAULT_NAME,
+#               AZ_VAULT_URL, AZ_ACCESS_TOKEN
+
+# AKV secret names allow only [A-Za-z0-9-]; map anything else to a dash.
+akv_sanitize() { echo "${1//[^A-Za-z0-9-]/-}"; }
+
+# Build the slug-free, AKV-safe secret name = the external_id. Mirrors the entity
+# order of utils/build_external_id but WITHOUT slugs and dash-joined.
+build_akv_name() {
+  local entities_json
+  entities_json=$(echo "$CONTEXT" | jq -c '.value_entities // .entities // {}')
+
+  # Start at application: the vault is already scoped to an org/account/namespace
+  # context, so those upper entities are redundant here. application + parameter
+  # ids are globally unique, so the value is still addressed unambiguously, and
+  # the name stays well under AKV's 127-char limit.
+  local entity_order=("application" "scope")
+  local segments=()
+
+  local entity_type entity_id
+  for entity_type in "${entity_order[@]}"; do
+    entity_id=$(echo "$entities_json" | jq -r ".$entity_type // empty")
+    [ -z "$entity_id" ] && continue
+    segments+=("${entity_type}-$(akv_sanitize "$entity_id")")
+  done
+
+  local dim
+  while IFS= read -r dim; do
+    [ -n "$dim" ] && segments+=("$(akv_sanitize "$dim")")
+  done < <(echo "$CONTEXT" | jq -r '(.dimensions // {}) | to_entries | sort_by(.key) | .[] | "\(.key)-\(.value)"')
+
+  local param_id param_name
+  param_id=$(echo "$CONTEXT" | jq -r '.parameter_id // empty')
+  param_name=$(echo "$CONTEXT" | jq -r '.parameter_name // empty')
+  if [ -n "$param_name" ] && [ -n "$param_id" ]; then
+    segments+=("$(akv_sanitize "$param_name")-${param_id}")
+  elif [ -n "$param_id" ]; then
+    segments+=("${param_id}")
+  fi
+
+  local IFS=-
+  echo "${segments[*]}"
+}
+
+SECRET_NAME=$(build_akv_name)
+
+if [ "${#SECRET_NAME}" -gt 127 ]; then
+  log error "❌ Secret name exceeds Azure Key Vault's 127-character limit (got ${#SECRET_NAME})"
+  log error ""
+  log error "💡 The name is the entity path (NRN ids + dimensions + parameter):"
+  log error "   $SECRET_NAME"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Shorten the parameter name, or reduce the number of dimensions"
+  log error "   • Deeply-nested scopes with many/long dimensions can exceed the limit"
+  exit 1
+fi
+
+# The AKV secret name IS the external_id (the version is appended below).
+EXTERNAL_ID="$SECRET_NAME"
+
+# The body carries the value; jq reads it from the environment (off argv) and the
+# whole payload is sent to curl on stdin.
+PAYLOAD=$(jq -n '{value: env.PARAMETER_VALUE, tags: {managed_by: "nullplatform"}}')
+
+resp_file=$(mktemp)
+http_code=$(curl -s -o "$resp_file" -w '%{http_code}' \
+  -X PUT "$AZ_VAULT_URL/secrets/$SECRET_NAME?api-version=7.4" \
+  -H "Authorization: Bearer $AZ_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<<"$PAYLOAD") || http_code="000"
+resp=$(cat "$resp_file")
+rm -f "$resp_file"
+
+if [ "$http_code" != "200" ]; then
+  log error "❌ Failed to store secret in Azure Key Vault '$AZ_VAULT_NAME' (HTTP $http_code)"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The service principal lacks Set permission on $AZ_VAULT_NAME"
+  log error "   • The vault firewall blocks the caller, or the token expired"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Confirm the SP has the Key Vault Secrets Officer role on the vault"
+  if [ "$http_code" = "000" ]; then
+    log error "Underlying error: could not connect to $AZ_VAULT_URL — no HTTP response (DNS, network egress, or the vault is unreachable: no route / no private endpoint from here)"
+  else
+    log error "Underlying error: $(echo "$resp" | jq -r '.error.message // "unknown error"' 2>/dev/null | head -1)"
+  fi
+  exit 1
+fi
+
+# AKV id URL format: https://<vault>.vault.azure.net/secrets/<name>/<version>
+# The last path component is the version id (hex string).
+AKV_ID=$(echo "$resp" | jq -r '.id // empty')
+VERSION_ID="${AKV_ID##*/}"
+
+# Encode version into external_id (the canonical handle nullplatform persists).
+[ -n "$VERSION_ID" ] && EXTERNAL_ID="${EXTERNAL_ID}#${VERSION_ID}"
+
+jq -n \
+    --arg external_id "$EXTERNAL_ID" \
+    --arg secret_id "$AKV_ID" \
+    --arg secret_name "$SECRET_NAME" \
+    --arg vault_name "$AZ_VAULT_NAME" \
+    '{external_id: $external_id, metadata: {azure_secret_id: $secret_id, secret_name: $secret_name, vault_name: $vault_name}}'

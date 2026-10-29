@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${name}-tokenreview-binding
+  labels:
+    app.kubernetes.io/managed-by: nullplatform
+    app.kubernetes.io/part-of: hashicorp-vault-parameters-provider
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: ${name}
+    namespace: ${namespace}

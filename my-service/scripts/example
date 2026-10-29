@@ -1,5 +1,0 @@
-#!/bin/bash
-# Placeholder step: replace with the steps your service needs (build context, apply, write outputs).
-set -euo pipefail
-
-echo "Running ${SERVICE_ACTION_TYPE} for service $(echo "$CONTEXT" | jq -r '.service.id // "unknown"')"

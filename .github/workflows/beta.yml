@@ -35,7 +35,7 @@ jobs:
     uses: nullplatform/actions-nullplatform/.github/workflows/publish-test-image-oci.yml@v1
     with:
       # Always `beta/` + the image_name in release.yml.
-      image_name: beta/agent-plugins/services/my-service
+      image_name: beta/agent-plugins/services/parameters
     secrets:
       aws_role_arn: ${{ secrets.AWS_BETA_ROLE_ARN }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}

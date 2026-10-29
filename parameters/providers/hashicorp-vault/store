@@ -1,0 +1,85 @@
+#!/bin/bash
+set -euo pipefail
+
+# Stores a parameter value in HashiCorp Vault KV v2.
+#
+# Versioning model:
+#   nullplatform parameter values are immutable. Each update is a new VERSION.
+#   Vault KV v2 has native versioning — every POST to the data endpoint creates
+#   a new version, all retained inside the same path, and the latest is returned
+#   on read by default. No special logic needed; the POST IS the versioning.
+#
+# Vault returns the new version number in the response body
+# (.data.version). We include it in metadata so the platform can persist it
+# and pass it back to retrieve when fetching a specific historical version.
+#
+# Required env: PARAMETER_ID, PARAMETER_VALUE, VAULT_ADDR, VAULT_TOKEN, VAULT_PATH_PREFIX
+# Optional env: VAULT_NAMESPACE (Vault Enterprise namespace, applied as a URL prefix)
+
+source "$PARAMETERS_ROOT/utils/build_external_id"
+build_external_id
+
+# Embed the KV path prefix so the external_id IS the full, self-contained KV path.
+# retrieve/delete then use it verbatim instead of recomposing it against the
+# current VAULT_PATH_PREFIX — so existing references stay valid even if
+# setup.path_prefix is later reconfigured. The Vault namespace is NOT embedded:
+# it is applied from the current config as a URL prefix at request time (see below).
+EXTERNAL_ID="$VAULT_PATH_PREFIX/$EXTERNAL_ID"
+VAULT_PATH="$EXTERNAL_ID"
+
+# Namespace segment for the request URL (empty on the root namespace). Vault
+# resolves it to the Enterprise namespace before routing to the KV mount.
+NS_PREFIX=""
+[ -n "${VAULT_NAMESPACE:-}" ] && NS_PREFIX="${VAULT_NAMESPACE}/"
+
+PAYLOAD=$(jq -nc \
+    --argjson parameter_id "${PARAMETER_ID:-null}" \
+    --arg value "$PARAMETER_VALUE" \
+    --arg stored_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg external_id "$EXTERNAL_ID" \
+    '{data: {parameter_id: $parameter_id, value: $value, stored_at: $stored_at, external_id: $external_id}}')
+
+# Capture the HTTP status alongside the body: curl -s exits 0 even on HTTP 4xx/5xx,
+# so relying on curl's exit code alone would report a failed write as success.
+if ! RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    "$VAULT_ADDR/v1/${NS_PREFIX}${VAULT_PATH}" \
+    -d "$PAYLOAD" 2>/dev/null); then
+  log error "❌ Network error storing parameter in Vault at $VAULT_ADDR"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • Network unreachable to $VAULT_ADDR (DNS / firewall / TLS)"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Test connectivity: curl -s $VAULT_ADDR/v1/sys/health"
+  exit 1
+fi
+
+HTTP_STATUS="${RESPONSE##*$'\n'}"
+HTTP_BODY="${RESPONSE%$'\n'*}"
+
+if [[ "$HTTP_STATUS" != 2* ]]; then
+  log error "❌ Vault write failed with HTTP $HTTP_STATUS at $VAULT_PATH"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • VAULT_TOKEN lacks write permission on $VAULT_PATH (403)"
+  log error "   • KV v2 mount in path_prefix ($VAULT_PATH_PREFIX) does not exist (404)"
+  log error "   • Wrong Vault namespace (${VAULT_NAMESPACE:-<root>}) — check .setup.namespace"
+  log error "   • path_prefix must be the full <mount>/data/<subpath> (404 if the mount/data segment is wrong)"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Verify token: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/auth/token/lookup-self"
+  log error "   • Confirm the mount: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/${NS_PREFIX}sys/mounts"
+  log error "Vault response: $HTTP_BODY"
+  exit 1
+fi
+
+VERSION_ID=$(echo "$HTTP_BODY" | jq -r '.data.version // empty')
+
+# Encode version into external_id (the canonical handle nullplatform persists).
+[ -n "$VERSION_ID" ] && EXTERNAL_ID="${EXTERNAL_ID}#${VERSION_ID}"
+
+jq -n \
+    --arg external_id "$EXTERNAL_ID" \
+    --arg vault_path "$VAULT_PATH" \
+    '{external_id: $external_id, metadata: {vault_path: $vault_path}}'

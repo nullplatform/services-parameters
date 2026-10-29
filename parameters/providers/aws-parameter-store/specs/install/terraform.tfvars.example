@@ -1,0 +1,40 @@
+nrn        = "organization=1"
+np_api_key = "REPLACE_ME"
+
+extra_visible_to_nrns = []
+
+# Optional overrides (defaults defined in variables.tf):
+# template_path                            = "parameters/providers/aws-secrets-manager/specs/install/aws-secrets-manager-configuration.json.tpl"
+# repository_parameter_storage_spec_branch = "main"
+# repository_parameter_storage_spec        = "https://raw.githubusercontent.com/nullplatform/parameters-provider/refs/heads"
+
+instances = {
+  prod-billing = {
+    nrn             = "organization=1:account=2:namespace=3"
+    dimensions      = { environment = "production" }
+    enable_notification_channel = true # create the agent API key + notification channel (default false)
+    tags_selectors  = { environment = "production" }
+    attributes = {
+      sensibility = {
+        applies_to = ["secret"]
+      }
+      setup = {
+        kms_key_id = "alias/parameters-prod-billing"
+        tier       = "Standard"
+      }
+    }
+  }
+  staging-billing = {
+    nrn        = "organization=1:account=2:namespace=3"
+    dimensions = { environment = "staging" }
+    attributes = {
+      sensibility = {
+        applies_to = ["non_secret"]
+      }
+      setup = {
+        kms_key_id = ""
+        tier       = "Advanced"
+      }
+    }
+  }
+}

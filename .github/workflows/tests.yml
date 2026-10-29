@@ -1,0 +1,58 @@
+name: tests
+
+# shellcheck and the trivy IaC scan run in their own workflows (shellcheck.yml,
+# trivy.yml); this one lints and validates the provider install specs and runs
+# the BATS unit tests.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  tofu:
+    name: Tofu Lint & Validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: v1.10.6
+
+      - name: tofu fmt
+        run: tofu fmt -check -recursive parameters/providers
+
+      # Multi-module repo: one tofu module per provider spec, so init/validate
+      # per discovered module rather than at the repo root. Discovery is dynamic,
+      # so new providers are covered automatically once committed.
+      - name: tofu init + validate (per module)
+        run: |
+          set -e
+          modules=$(find parameters/providers -name versions.tf \
+            -not -path '*/.terraform/*' -exec dirname {} \; | sort -u)
+          for m in $modules; do
+            echo "::group::$m"
+            ( cd "$m" && tofu init -backend=false -input=false >/dev/null && tofu validate -no-color )
+            echo "::endgroup::"
+          done
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y bats jq
+
+      - name: Install gomplate
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/gomplate \
+            https://github.com/hairyhenderson/gomplate/releases/download/v4.3.3/gomplate_linux-amd64
+          sudo chmod +x /usr/local/bin/gomplate
+          gomplate --version
+
+      - name: Run unit tests
+        run: make test-unit
