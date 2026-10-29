@@ -1,0 +1,31 @@
+#!/bin/bash
+# Called by the agent on every action; routes service actions to ./service and link actions to ./link.
+set -euo pipefail
+
+if [ -z "${NP_ACTION_CONTEXT:-}" ]; then
+  echo "NP_ACTION_CONTEXT is not set. Exiting." >&2
+  exit 1
+fi
+
+# The agent passes NP_API_KEY; the np CLI reads NULLPLATFORM_API_KEY.
+if [ -n "${NP_API_KEY:-}" ] && [ -z "${NULLPLATFORM_API_KEY:-}" ]; then
+  export NULLPLATFORM_API_KEY="$NP_API_KEY"
+fi
+
+NP_ACTION_CONTEXT=$(echo "$NP_ACTION_CONTEXT" | sed "s/^'//;s/'$//")
+CONTEXT=$(echo "$NP_ACTION_CONTEXT" | jq '.notification')
+SERVICE_ACTION=$(echo "$CONTEXT" | jq -r '.slug')
+SERVICE_ACTION_TYPE=$(echo "$CONTEXT" | jq -r '.type')
+LINK=$(echo "$CONTEXT" | jq '.link')
+export NP_ACTION_CONTEXT CONTEXT SERVICE_ACTION SERVICE_ACTION_TYPE LINK
+
+ACTION_SOURCE="service"
+if [ "$(echo "$CONTEXT" | jq '.link != null')" = "true" ]; then
+  ACTION_SOURCE="link"
+fi
+
+WORKING_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_PATH="${SERVICE_PATH:-$(dirname "$WORKING_DIRECTORY")}"
+export WORKING_DIRECTORY SERVICE_PATH ACTION_SOURCE
+
+np service-action exec --live-output --live-report --script="$WORKING_DIRECTORY/$ACTION_SOURCE"

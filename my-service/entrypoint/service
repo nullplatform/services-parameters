@@ -1,0 +1,9 @@
+#!/bin/bash
+# Runs workflows/<action>.yaml for a service action (create, update, delete, or a custom action slug).
+set -euo pipefail
+
+action="$SERVICE_ACTION_TYPE"
+[ "$SERVICE_ACTION_TYPE" = "custom" ] && action="$SERVICE_ACTION"
+
+echo "Executing service action=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE"
+np service workflow exec --workflow "$SERVICE_PATH/workflows/$action.yaml" --values "$SERVICE_PATH/values.yaml"

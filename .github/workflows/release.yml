@@ -1,0 +1,68 @@
+name: release
+
+# One chained run: release-please -> build and push to ECR Public -> artifact
+# registration -> release finalized with the image digest.
+#
+# Recovery / backfill: dispatch with existing_tag to publish an existing tag.
+#
+# Needs: repo secret AWS_ROLE_ARN_ECR_PUSH (the role ARN the "Public ECR" service
+# returns), repo variable NP_ARTIFACT_NRN, org secret ARTIFACT_NP_API_KEY, and the
+# ECR repository + publisher role that the
+# "Public ECR" service registers.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      existing_tag:
+        description: 'Publish + finalize an existing tag (recovery/backfill)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # A missing secret or variable would otherwise surface as an opaque error after the build.
+  preflight:
+    # The template repository itself must never publish; repos created from it are not templates.
+    if: ${{ !github.event.repository.is_template }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      # Template placeholders look valid, so nothing else stops a release that would
+      # publish them to the catalog: name, selectors, image_name, the my-* directory.
+      - name: Check the template placeholders are gone
+        run: python3 .github/scripts/check-scaffold.py
+      - name: Check the publish configuration
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
+          NP_ARTIFACT_NRN: ${{ vars.NP_ARTIFACT_NRN }}
+        run: |
+          missing=0
+          if ! [[ "$AWS_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+ ]]; then
+            echo "::error::secret AWS_ROLE_ARN_ECR_PUSH is missing or not a role ARN; set it to the ARN the Public ECR service returned (README, Publishing)"
+            missing=1
+          fi
+          if [ -z "$NP_ARTIFACT_NRN" ]; then
+            echo "::error::variable NP_ARTIFACT_NRN is missing; set it to the NRN of the organization that owns the artifacts (README, Publishing)"
+            missing=1
+          fi
+          exit "$missing"
+
+  release:
+    needs: preflight
+    uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
+    with:
+      image_name: agent-plugins/services/my-service
+      # latest always points at the last release; pull requests publish to beta/ instead.
+      also_tag_latest: true
+      existing_tag: ${{ inputs.existing_tag || '' }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
+      artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}

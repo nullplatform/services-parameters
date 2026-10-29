@@ -1,0 +1,35 @@
+# Keeps the base image FROM pinned to the latest published version: when a
+# new tag of the base is released, Dependabot opens a bump PR and this repo's
+# CI (build + image scan) validates it before merge.
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    # fix(deps): release-please only cuts a release for feat/fix; chore(deps) would leave the bump unpublished.
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "base-image"
+
+  # Keeps the pinned refs of the shared reusable workflows current; a major arrives on its own PR.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"

@@ -1,0 +1,28 @@
+name: trivy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy:
+    uses: nullplatform/actions-nullplatform/.github/workflows/trivy-tofu-scan.yml@v1
+
+  # Scans the built image (base layers + this repo's additions) into the Security tab.
+  # Report-only: the build gate stays in the release pipeline.
+  image:
+    permissions:
+      contents: read
+      security-events: write
+      # docker-security-scan declares actions: read; granting less fails the run at startup.
+      actions: read
+    uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@v1
+    with:
+      context: .
+      image_name: my-service
+      exit_code: 0
