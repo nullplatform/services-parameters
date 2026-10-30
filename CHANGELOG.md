@@ -5,6 +5,26 @@ point. Everything below is the history of
 [nullplatform/parameters-provider](https://github.com/nullplatform/parameters-provider),
 where this package lived until it moved here to ship as a worker image.
 
+## 1.0.0 (2026-10-30)
+
+
+### Features
+
+* add Azure Key Vault parameter provider (REST/curl) ([parameters-provider#8](https://github.com/nullplatform/parameters-provider/pull/8)) ([5306d8e](https://github.com/nullplatform/services-parameters/commit/5306d8eb88a05d8ddbba657423a27e16f8d6f414))
+* add GCP Secret Manager parameter provider (REST/curl) ([d45c0e8](https://github.com/nullplatform/services-parameters/commit/d45c0e8585f9e979cf3b7d6d4f948eb237562af7))
+* add HashiCorp Vault parameter provider ([97f27d6](https://github.com/nullplatform/services-parameters/commit/97f27d6796d9d8df5e0039ec04d0b6d8d6f54127))
+* import parameters-provider and ship it as a worker image ([2ae1e80](https://github.com/nullplatform/services-parameters/commit/2ae1e80fdfa6ef70ab218366f7f32b34df9815c9))
+
+
+### Bug Fixes
+
+* authenticate HashiCorp Vault login against the configured Enterprise namespace ([parameters-provider#13](https://github.com/nullplatform/parameters-provider/pull/13)) ([56e24b6](https://github.com/nullplatform/services-parameters/commit/56e24b6e6dc133712e556f08019741e11a763bd9))
+* remove broken unreferenced tofu files from aws-secrets-manager/specs and fmt locals ([3af2829](https://github.com/nullplatform/services-parameters/commit/3af2829b7d30286e4ea2457941675aa1e4431797))
+* rename aws-secrets-manager requeriments spec dir to requirements ([parameters-provider#10](https://github.com/nullplatform/parameters-provider/pull/10)) ([a4e4345](https://github.com/nullplatform/services-parameters/commit/a4e434514e7f2a52262dc81c10be0244d2cf6b16))
+* rename HashiCorp Vault namespace field label to Namespace ([parameters-provider#11](https://github.com/nullplatform/parameters-provider/pull/11)) ([2b5d1e7](https://github.com/nullplatform/services-parameters/commit/2b5d1e77387bbcd844b28b91a54c3d7e99b40689))
+* repair PR CI — checkout submodules, drop stale go job, shellcheck extensionless scripts ([af0cef5](https://github.com/nullplatform/services-parameters/commit/af0cef5c9faa15ea37c4ca87328c775e48c99c92))
+* split HashiCorp Vault namespace/path_prefix and validate store status ([parameters-provider#14](https://github.com/nullplatform/parameters-provider/pull/14)) ([7bd5337](https://github.com/nullplatform/services-parameters/commit/7bd5337e5bc90cbde6eab3c941b4a5ace3579dcb))
+
 ## parameters-provider, unreleased at the move
 
 ### Added
