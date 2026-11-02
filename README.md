@@ -52,7 +52,7 @@ The channel comes from the `parameter_storage_definition_agent_association` modu
 ├── docs/                    # architecture, configuration, adding a provider
 ├── src/
 │   ├── main.ts              # the image's entry: the worker with every provider
-│   ├── worker.ts            # the routes: parameter:store / retrieve / delete / notify, and retrieve_batch (several values in one call; Secrets Manager reads 20 per BatchGetSecretValue, a backend without a batch read answers NOT_IMPLEMENTED and the platform retrieves one by one)
+│   ├── worker.ts            # the routes: parameter:store / retrieve / delete / notify, and retrieve_batch (several values in one call: Secrets Manager 20 per BatchGetSecretValue, Parameter Store 10 per GetParameters, Key Vault, GCP and Vault in parallel; a backend without a batch read would answer NOT_IMPLEMENTED and the platform retrieves one by one)
 │   ├── context.ts           # the request a notification carries
 │   ├── naming.ts            # the canonical path every backend's name is built from
 │   ├── settings.ts          # provider attributes > environment > default

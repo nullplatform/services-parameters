@@ -73,3 +73,16 @@ describe("azure-key-vault", () => {
     await expect(refused.session.delete(refused.request)).rejects.toMatchObject({ code: "DELETE_FAILED" });
   });
 });
+
+describe("a batch of Key Vault secrets", () => {
+  test("reads the values in parallel through getSecret, and leaves out one the vault refuses", async () => {
+    const { session, calls } = await open({ getSecret: async (name) => { if (name.endsWith("API-TOKEN-43")) { throw restError(404); } return { value: `value of ${name}` }; } });
+    const handles = ["application-4-DB-PASSWORD-42#abc", "application-4-API-TOKEN-43#def", "application-4-LOG-LEVEL-44"];
+    const answer = await session.retrieveBatch!(handles.map((handle) => requestFor("azure-key-vault", { external_id: handle })));
+    expect(answer.values.sort((left, right) => left.external_id.localeCompare(right.external_id))).toEqual([
+      { external_id: "application-4-DB-PASSWORD-42#abc", value: "value of application-4-DB-PASSWORD-42" },
+      { external_id: "application-4-LOG-LEVEL-44", value: "value of application-4-LOG-LEVEL-44" },
+    ]);
+    expect(calls.filter((call) => call.method === "getSecret").length).toBe(3);
+  });
+});

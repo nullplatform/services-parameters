@@ -12,7 +12,7 @@ import type { Context } from "@nullplatform/plugin";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure } from "../../failure";
 import { canonicalPath } from "../../naming";
-import { DONE, type Provider, type Session } from "../../provider";
+import { DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
 
 export const SLUG = "hashicorp-vault";
@@ -122,6 +122,11 @@ class VaultSession implements Session {
       throw new Failure("NOT_FOUND", { what: `Secret at ${path} not found in Vault`, causes: ["The secret was manually deleted from Vault", "The external_id is stale", ...(version ? [`Requested version '${version}' was destroyed via Vault's metadata API`] : [])], fixes: [`Verify: curl -s -H "X-Vault-Token: $VAULT_TOKEN" ${this.api.url(path)}`, "If genuinely missing, the parameter value needs to be re-stored"] });
     }
     throw new Failure("RETRIEVE_FAILED", { what: `Vault GET failed with HTTP ${answer.status} at ${path}`, causes: ["The token lacks read permission (403)", "Server-side error (5xx)"], fixes: [`Verify token: curl -s -H "X-Vault-Token: $VAULT_TOKEN" ${this.api.address}/v1/auth/token/lookup-self`], underlying: answer.text });
+  }
+
+  /** The backend has no batch read: a batch is its values read in parallel. */
+  retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
+    return retrieveEach(this, requests, this.context.log);
   }
 
   async delete(request: ParameterRequest) {

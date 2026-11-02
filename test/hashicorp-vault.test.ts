@@ -59,3 +59,17 @@ describe("hashicorp-vault", () => {
     await expect(refused.session.delete(refused.request)).rejects.toMatchObject({ code: "DELETE_FAILED" });
   });
 });
+
+describe("a batch of Vault secrets", () => {
+  test("reads the values in parallel at their versions, and leaves out one Vault has not got", async () => {
+    const route: Parameters<typeof fakeFetch>[0] = (method, url) => (url.includes("/b-2?") ? { status: 404, body: { errors: [] } } : { status: 200, body: { data: { data: { value: `value at ${url.split("/v1/")[1]}` } } } });
+    const { session, calls } = await open(loginThen(route), { external_id: `${PATH}#1` });
+    const handles = ["prefix/a-1#1", "prefix/b-2#1", "prefix/c-3"];
+    const answer = await session.retrieveBatch!(handles.map((handle) => requestFor("hashicorp-vault", { external_id: handle })));
+    expect(answer.values.sort((left, right) => left.external_id.localeCompare(right.external_id))).toEqual([
+      { external_id: "prefix/a-1#1", value: "value at prefix/a-1?version=1" },
+      { external_id: "prefix/c-3", value: "value at prefix/c-3" },
+    ]);
+    expect(calls.filter((call) => call.method === "GET").length).toBe(3);
+  });
+});

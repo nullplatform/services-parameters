@@ -14,7 +14,7 @@ import type { Context } from "@nullplatform/plugin";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure } from "../../failure";
 import { canonicalPath } from "../../naming";
-import { DONE, type Provider, type Session } from "../../provider";
+import { DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
 
 export const SLUG = "gcp-secret-manager";
@@ -147,6 +147,11 @@ class SecretManagerSession implements Session {
       throw new Failure("NOT_FOUND", { what: `Secret '${secretId}' (version ${version}) not found in GCP project '${this.projectId}'`, causes: ["The secret was manually deleted from Secret Manager", "The external_id is stale", ...(request.externalId.version ? [`Requested version '${request.externalId.version}' does not exist on the secret`] : [])], fixes: [`Verify: gcloud secrets versions list ${secretId} --project ${this.projectId}`, "If genuinely missing, the parameter value needs to be re-stored"] });
     }
     throw new Failure("RETRIEVE_FAILED", { what: `Failed to retrieve secret '${secretId}' (version ${version}) from GCP project '${this.projectId}' (HTTP ${answer.status})`, causes: ["The agent identity lacks secretmanager.versions.access on the secret", "The requested version is disabled or destroyed (HTTP 400 FAILED_PRECONDITION)", "The access token expired"], fixes: ["Grant the agent principal access as in docs/iam-policy.md", `Check the version state: gcloud secrets versions describe ${version} --secret ${secretId} --project ${this.projectId}`], underlying: this.underlying(answer) });
+  }
+
+  /** The backend has no batch read: a batch is its values read in parallel. */
+  retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
+    return retrieveEach(this, requests, this.context.log);
   }
 
   async delete(request: ParameterRequest) {

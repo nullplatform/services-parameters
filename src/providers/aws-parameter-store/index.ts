@@ -6,14 +6,14 @@
  * returns; retrieve reads `<name>:<version>`, delete removes every version.
  */
 
-import { DeleteParameterCommand, GetParameterCommand, PutParameterCommand, SSMClient, type ParameterTier } from "@aws-sdk/client-ssm";
+import { DeleteParameterCommand, GetParameterCommand, GetParametersCommand, PutParameterCommand, SSMClient, type ParameterTier } from "@aws-sdk/client-ssm";
 import type { Context } from "@nullplatform/plugin";
 import { assumedRolesOf, clientOptions, realAwsClients, type AwsClients } from "../../aws/clients";
 import { awsAccess, type AwsAccess, type RoleSelection, type Sender } from "../../aws/role";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure, messageOf } from "../../failure";
 import { canonicalPath } from "../../naming";
-import { DONE, type Provider, type Session } from "../../provider";
+import { chunks, DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
 
 export const SLUG = "aws-parameter-store";
@@ -37,6 +37,14 @@ export interface ParameterStoreOptions {
 export const parameterNameOf = (path: string): string => `${NAME_PREFIX}${path.replace(/=/g, "_")}`;
 
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "");
+
+/** How many parameters one GetParameters reads. */
+export const BATCH_SIZE = 10;
+
+interface BatchAnswer {
+  Parameters?: Array<{ Name?: string; Version?: number; Value?: string }>;
+  InvalidParameters?: string[];
+}
 
 class ParameterStoreSession implements Session {
   constructor(
@@ -73,6 +81,42 @@ class ParameterStoreSession implements Session {
       throw new Failure("RETRIEVE_FAILED", { what: `Failed to retrieve parameter '${name}' from AWS Parameter Store`, causes: ["IAM principal lacks ssm:GetParameter on this resource", "KMS key permission missing (kms:Decrypt) for SecureString", `Region '${this.region}' unreachable`], fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`], underlying: messageOf(error) });
     }
     return { value: answer.Parameter?.Value ?? "" };
+  }
+
+  /** A batch reads up to BATCH_SIZE parameters per GetParameters, each at the version its handle names; one the call could not read, or answered at another version, is read alone, and one that still fails is left out. */
+  async retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
+    const byName = new Map(requests.map((request) => [parameterNameOf(request.externalId.path), request]));
+    const selectorOf = (request: ParameterRequest): string => (request.externalId.version ? `${parameterNameOf(request.externalId.path)}:${request.externalId.version}` : parameterNameOf(request.externalId.path));
+    const values: RetrievedBatch["values"] = [];
+    const alone: ParameterRequest[] = [];
+    await Promise.all(
+      chunks([...byName.values()], BATCH_SIZE).map(async (group) => {
+        let answer: BatchAnswer;
+        try {
+          answer = await this.ssm.send(new GetParametersCommand({ Names: group.map(selectorOf), WithDecryption: true }));
+        } catch (error) {
+          this.context.log.warn(`batch read of ${group.length} parameters failed, reading them one by one: ${messageOf(error)}`);
+          alone.push(...group);
+          return;
+        }
+        const read = new Set<string>();
+        for (const parameter of answer.Parameters ?? []) {
+          const request = parameter.Name === undefined ? undefined : byName.get(parameter.Name);
+          if (!request) {
+            continue;
+          }
+          read.add(parameter.Name as string);
+          if (request.externalId.version && String(parameter.Version ?? "") !== request.externalId.version) {
+            alone.push(request);
+            continue;
+          }
+          values.push({ external_id: handleOf(request.externalId.path, request.externalId.version), value: parameter.Value ?? "" });
+        }
+        alone.push(...group.filter((request) => !read.has(parameterNameOf(request.externalId.path))));
+      }),
+    );
+    values.push(...(await retrieveEach(this, alone, this.context.log)).values);
+    return { values };
   }
 
   async delete(request: ParameterRequest) {

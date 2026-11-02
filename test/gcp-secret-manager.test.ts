@@ -82,3 +82,17 @@ describe("gcp-secret-manager", () => {
     await expect(refused.session.delete(refused.request)).rejects.toMatchObject({ code: "DELETE_FAILED" });
   });
 });
+
+describe("a batch of Secret Manager secrets", () => {
+  test("accesses the versions in parallel and decodes each payload, leaving out one that is missing", async () => {
+    const other = CANONICAL.replace("DB_PASSWORD-42", "API_TOKEN-43");
+    const route: Parameters<typeof fakeFetch>[0] = (method, url) => (url.includes(secretIdOf("nullplatform", other)) ? { status: 404, body: {} } : { status: 200, body: { payload: { data: Buffer.from(url.split("/versions/")[1]).toString("base64") } } });
+    const { session, calls } = await open(route, { external_id: `${CANONICAL}#3` });
+    const answer = await session.retrieveBatch!([requestFor("gcp-secret-manager", { external_id: `${CANONICAL}#3` }), requestFor("gcp-secret-manager", { external_id: `${other}#1` }), requestFor("gcp-secret-manager", { external_id: CANONICAL })]);
+    expect(answer.values.sort((left, right) => left.external_id.localeCompare(right.external_id))).toEqual([
+      { external_id: CANONICAL, value: "latest:access" },
+      { external_id: `${CANONICAL}#3`, value: "3:access" },
+    ]);
+    expect(calls.length).toBe(3);
+  });
+});

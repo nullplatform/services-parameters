@@ -17,7 +17,7 @@ import { awsAccess, type AwsAccess, type RoleSelection, type Sender } from "../.
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure, messageOf } from "../../failure";
 import { canonicalPath } from "../../naming";
-import { DONE, type Provider, type RetrievedBatch, type Session } from "../../provider";
+import { chunks, DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
 
 export const SLUG = "aws-secrets-manager";
@@ -45,8 +45,6 @@ interface BatchAnswer {
   SecretValues?: Array<{ Name?: string; VersionId?: string; SecretString?: string }>;
   Errors?: Array<{ SecretId?: string; ErrorCode?: string; Message?: string }>;
 }
-
-const chunks = <Item>(items: Item[], size: number): Item[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
 export const envelopeOf = (request: ParameterRequest, path: string, storedAt: Date): string => JSON.stringify({ parameter_id: request.parameterId ? Number(request.parameterId) : null, value: request.value, stored_at: storedAt.toISOString().replace(/\.\d{3}Z$/, "Z"), external_id: path });
 
@@ -125,15 +123,7 @@ class SecretsManagerSession implements Session {
         alone.push(...names.filter((name) => !read.has(name)).map((name) => byName.get(name) as ParameterRequest));
       }),
     );
-    await Promise.all(
-      alone.map(async (request) => {
-        try {
-          values.push({ external_id: handleOf(request.externalId.path, request.externalId.version), value: (await this.retrieve(request)).value });
-        } catch (error) {
-          this.context.log.warn(`secret '${NAME_PREFIX}${request.externalId.path}' left out of the batch: ${messageOf(error)}`);
-        }
-      }),
-    );
+    values.push(...(await retrieveEach(this, alone, this.context.log)).values);
     return { values };
   }
 

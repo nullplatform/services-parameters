@@ -13,7 +13,7 @@ import type { Context } from "@nullplatform/plugin";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure, messageOf } from "../../failure";
 import { dimensionSegments, parameterSegment } from "../../naming";
-import { DONE, type Provider, type Session } from "../../provider";
+import { DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
 
 export const SLUG = "azure-key-vault";
@@ -83,6 +83,11 @@ class KeyVaultSession implements Session {
       }
       throw new Failure("RETRIEVE_FAILED", { what: `Failed to retrieve secret '${name}' from Azure Key Vault '${this.vaultName}'`, causes: [`The service principal lacks Get permission on vault ${this.vaultName}`, "The vault firewall blocks the caller, or the token expired"], fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"], underlying: messageOf(error) });
     }
+  }
+
+  /** The backend has no batch read: a batch is its values read in parallel. */
+  retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
+    return retrieveEach(this, requests, this.context.log);
   }
 
   async delete(request: ParameterRequest) {

@@ -6,7 +6,7 @@
  * the JSON the platform reads, in the same shape the bash printed.
  */
 
-import type { Context } from "@nullplatform/plugin";
+import type { Context, Logger } from "@nullplatform/plugin";
 import type { ParameterRequest } from "./context";
 
 export interface Stored {
@@ -44,3 +44,29 @@ export interface Provider {
 }
 
 export const DONE: Done = { success: true };
+
+/** `items` in groups of `size`, in order. */
+export const chunks = <Item>(items: Item[], size: number): Item[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
+
+/** How many single reads a batch runs at once in a backend without a batch read. */
+export const BATCH_CONCURRENCY = 10;
+
+/** The handle a request carries, as the platform spelled it. */
+const handleOfRequest = (request: ParameterRequest): string => (request.externalId.version ? `${request.externalId.path}#${request.externalId.version}` : request.externalId.path);
+
+/** The values of `requests` read one by one through `session.retrieve`, `limit` at a time; one that fails is logged and left out, and the platform retrieves it on its own. */
+export async function retrieveEach(session: Pick<Session, "retrieve">, requests: ParameterRequest[], log: Logger, limit = BATCH_CONCURRENCY): Promise<RetrievedBatch> {
+  const values: RetrievedBatch["values"] = [];
+  const pending = [...requests];
+  const read = async (): Promise<void> => {
+    for (let request = pending.shift(); request; request = pending.shift()) {
+      try {
+        values.push({ external_id: handleOfRequest(request), value: (await session.retrieve(request)).value });
+      } catch (error) {
+        log.warn(`'${request.externalId.path}' left out of the batch: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, requests.length) }, read));
+  return { values };
+}
