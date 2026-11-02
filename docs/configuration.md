@@ -41,7 +41,8 @@ namespace for every platform secret, so historical handles keep resolving.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `NP_PACKAGE_NAME` | `parameters-<slug>` | the package the agent's worker pin names |
+| `PARAMETERS_PROVIDER` | required | the backend the worker serves: `aws-secrets-manager`, `aws-parameter-store`, `azure-key-vault`, `gcp-secret-manager` or `hashicorp-vault` |
+| `NP_PACKAGE_NAME` | `parameters` | the package the agent's worker pin names |
 | `NP_PACKAGE_VERSION` | `0.0.0` | the manifest's version |
 | `NP_AGENT_SOURCES` | `service` | the notification sources the manifest's channel subscribes to |
 
@@ -53,5 +54,5 @@ backend with the variables above in the environment: `PROVIDER=hashicorp-vault n
 
 ```bash
 VAULT_ADDR=http://localhost:8200 VAULT_USERNAME=np VAULT_PASSWORD=pw \
-NP_ACTION_CONTEXT="$(cat src/samples/store.json)" bun src/providers/hashicorp-vault/main.ts
+PARAMETERS_PROVIDER=hashicorp-vault NP_ACTION_CONTEXT="$(cat src/samples/store.json)" bun src/main.ts
 ```

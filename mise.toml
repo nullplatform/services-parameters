@@ -1,7 +1,6 @@
 # ---------------------------------------------------------------------------
-# Run one backend's worker locally as a package: `np package run` (or
-# `mise run run`), with PROVIDER naming the backend (aws-secrets-manager by
-# default). `np package build --image` runs `build:image`, `np package run`
+# Run the worker locally as a package: `np package run` (or `mise run run`),
+# with PROVIDER naming the backend it serves (aws-secrets-manager by default). `np package build --image` runs `build:image`, `np package run`
 # runs `run`. See "Run locally as a package" in the README.
 # ---------------------------------------------------------------------------
 
@@ -9,8 +8,8 @@
 PROVIDER = "aws-secrets-manager"
 
 [tasks."build:image"]
-description = "Build the worker image of $PROVIDER"
-run = 'docker build --build-arg PROVIDER="$PROVIDER" -t "parameters-$PROVIDER:dev" .'
+description = "Build the worker image"
+run = 'docker build -t parameters:dev .'
 
 [tasks.test]
 description = "Run the tests: every provider against fakes of its backend"
@@ -21,8 +20,8 @@ description = "Type-check the package"
 run = "bunx tsc --noEmit -p ."
 
 [tasks.describe]
-description = "Print the manifest of $PROVIDER's worker"
-run = 'bun "src/providers/$PROVIDER/main.ts" --describe'
+description = "Print the manifest of the worker serving $PROVIDER"
+run = 'PARAMETERS_PROVIDER="$PROVIDER" bun src/main.ts --describe'
 
 # Runs the service the way production does: a controlplane-agent with the
 # worker orchestrator (docker backend) that SPAWNS the worker container and
@@ -36,14 +35,15 @@ run = 'bun "src/providers/$PROVIDER/main.ts" --describe'
 # container; the JSON goes into an NP_WORKER_RULES entry, which is how the agent
 # hands env to the WORKER it spawns. Run without the CLI and both are empty.
 [tasks.run]
-description = "Run locally: an agent (docker backend) that spawns $PROVIDER's worker"
+description = "Run locally: an agent (docker backend) that spawns the worker serving $PROVIDER"
 depends = ["build:image"]
 run = """
 set -eu
 : "${NP_API_KEY:?set NP_API_KEY}"
-slug="${NP_PACKAGE_SLUG:-parameters-$PROVIDER}"
+slug="${NP_PACKAGE_SLUG:-parameters}"
 env_json='{}'
 [ -n "${NP_PACKAGE_ENV_JSON:-}" ] && env_json="$NP_PACKAGE_ENV_JSON"
+env_json=$(printf '%s' "$env_json" | jq -c --arg provider "$PROVIDER" '. + {PARAMETERS_PROVIDER: $provider}')
 worker_rules='[{"match":{"package":"'"$slug"'"},"env":'"$env_json"'}]'
 docker rm -f "np-$slug-agent" >/dev/null 2>&1 || true
 # A worker left by a previous run would be adopted as is, old image included.
@@ -55,7 +55,7 @@ docker run --rm --name "np-$slug-agent" --network host \
   ${NP_PACKAGE_ENV_FLAGS:-} \
   -e NP_API_KEY -e NP_LOG_LEVEL="${NP_LOG_LEVEL:-INFO}" \
   -e NP_WORKER_BACKEND=docker \
-  -e NP_WORKER_IMAGE="parameters-$PROVIDER:dev" \
+  -e NP_WORKER_IMAGE="parameters:dev" \
   -e NP_WORKER_RULES="$worker_rules" \
   "${NP_AGENT_IMAGE:-public.ecr.aws/nullplatform/controlplane-agent:latest}" \
   -runtime=host -tags=package:"$slug",local:"${NP_LOCAL_USER:-$USER}"

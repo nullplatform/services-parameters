@@ -5,14 +5,15 @@ provider for each parameter (`provider.specification_slug` in the notification) 
 provider's configuration along (`provider.attributes`), so a worker needs no configuration of
 its own beyond the credentials in its environment.
 
-## One worker per backend
+## One worker image, one backend per worker
 
-Each backend is a provider under `src/providers/<slug>/` and ships as its own image,
-`agent-plugins/services/parameters-<slug>`, built from the one `Dockerfile` with
-`--build-arg PROVIDER=<slug>`: the provider's TypeScript compiled by bun into one binary with that
-backend's client alone. The agent spawns the image named by the worker pin for the package
-`parameters-<slug>` and dials it over gRPC; the `parameters` channel of that provider routes it
-the `parameter:<action>` notifications of the parameters bound to it.
+Each backend is a provider under `src/providers/<slug>/`, and every provider ships in one image,
+`agent-plugins/services/parameters`: the providers' TypeScript compiled by bun into one binary.
+`PARAMETERS_PROVIDER` in the worker's environment names the backend it serves
+(`src/providers/index.ts`); the worker refuses to start without one it knows. The agent spawns
+the image named by the worker pin for the package `parameters`, with `PARAMETERS_PROVIDER` in the
+pin's `env`, and dials it over gRPC; the `parameters` channel routes it the `parameter:<action>`
+notifications of the parameters bound to that backend.
 
 ```
 nullplatform ── parameter:<action> notification ──▶ agent ──▶ worker image of the provider
@@ -72,6 +73,7 @@ STS call an hour instead of one per action.
 
 ```
 src/
+├── main.ts              the image's entry: the provider PARAMETERS_PROVIDER names
 ├── worker.ts            the four routes and the dispatch
 ├── context.ts           ParameterRequest: what a notification carries
 ├── naming.ts            canonicalPath and the pieces each backend reshapes
@@ -80,7 +82,7 @@ src/
 ├── config.ts            what an image is to the agent (package name, version, sources)
 ├── aws/                 role resolution, assumed credentials, the SDK clients
 ├── samples/             one notification per action, the manifest's runs and the tests' start
-└── providers/<slug>/    index.ts (the provider), main.ts (the image's entry)
+└── providers/           index.ts (providerOf: the provider per slug), <slug>/index.ts (each provider)
 test/                    one suite per module; each provider against a fake of its client
 parameters/providers/<slug>/   Tofu install specs and docs of each backend
 ```

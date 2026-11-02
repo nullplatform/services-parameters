@@ -1,13 +1,13 @@
 {
   "name": "services-parameters",
   "version": "0.0.0",
-  "description": "Parameter and secret storage for nullplatform, one worker per backend",
+  "description": "Parameter and secret storage for nullplatform, one worker for every backend",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
-    "describe": "bun src/providers/aws-secrets-manager/main.ts --describe"
+    "describe": "PARAMETERS_PROVIDER=aws-secrets-manager bun src/main.ts --describe"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.700.0",

@@ -25,7 +25,7 @@ but the CI matrices and the install specs.
    (`src/provider.ts`): `open(request, context)` validates the settings and authenticates once,
    returning a `Session` with `store`, `retrieve`, `delete` and, when the backend has something
    to do on it, `notify`.
-2. **`src/providers/<slug>/main.ts`**: `await main(parametersWorker(<factory>(), workerConfigOf(SLUG)))`.
+2. **`src/providers/index.ts`**: add `[SLUG]: () => <factory>()` to `PROVIDERS`, so `PARAMETERS_PROVIDER=<slug>` selects it.
 3. **`test/<slug>.test.ts`**: with the helpers in `test/support.ts`, cover the settings' errors,
    store on a new and an existing secret (the handle's version), retrieve at a version, retrieve
    not found, delete, delete of a missing secret, and a refused backend call.
@@ -33,7 +33,5 @@ but the CI matrices and the install specs.
    `parameters-storage` configuration template (its `slug` is `<slug>`), `specs/requirements`,
    and `docs/architecture.md` (storage layout, versioning, the version id's format) plus an IAM or
    RBAC note where the backend has one.
-5. **The matrices** in `.github/workflows/beta.yml` and `release.yml`: add the slug; its image is
-   `agent-plugins/services/parameters-<slug>`.
-6. **Wire it up**: register the `parameters-storage` provider specification in nullplatform and
-   point its channel at the package `parameters-<slug>`.
+5. **Wire it up**: register the `parameters-storage` provider specification in nullplatform and
+   pin the package `parameters` with `PARAMETERS_PROVIDER=<slug>` in the worker's `env`.

@@ -3,8 +3,8 @@
  * `parameter:retrieve`, `parameter:delete` and `parameter:notify`, each
  * reading the request from the notification, refusing one meant for another
  * backend, opening the provider's session and answering what the operation
- * returns. One image per backend carries one of these, with that backend's
- * client alone.
+ * returns. The image carries one per backend, and PARAMETERS_PROVIDER picks
+ * the one a worker serves.
  */
 
 import { definePlugin, where, type Context, type Payload, type Route } from "@nullplatform/plugin";
@@ -34,7 +34,7 @@ export function requestFor(provider: Provider, payload: Payload): ParameterReque
     throw new Failure("WRONG_PROVIDER", {
       what: `This worker stores parameters in ${provider.slug}, and the parameter is bound to ${request.provider.slug}`,
       causes: ["The notification channel routes another provider's parameters to this worker"],
-      fixes: [`Point the channel of ${request.provider.slug} at its own worker image`],
+      fixes: [`Point the channel of ${request.provider.slug} at a worker with PARAMETERS_PROVIDER=${request.provider.slug}`],
     });
   }
   return request;

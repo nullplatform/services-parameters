@@ -29,13 +29,13 @@ The **dispatch is the worker** (`src/worker.ts`); the **backends are providers**
 
 ## How it runs
 
-Each backend ships as its own worker image,
-`public.ecr.aws/nullplatform/agent-plugins/services/parameters-<provider>`: the provider's
-TypeScript, on bun and `@nullplatform/plugin`, compiled to one binary with that backend's client
-alone (the AWS SDK, the Azure SDK, Google's auth library; Vault over its HTTP API). A
-`parameters` notification channel per provider, of type `package-exec`, makes the agent spawn
-that worker in its own pod and hand it every `parameter:<action>` of the parameters bound to
-that provider. No bash, no `jq`, no CLI: an action is a call to the backend's API.
+Every backend ships in one worker image,
+`public.ecr.aws/nullplatform/agent-plugins/services/parameters`: the providers' TypeScript, on
+bun and `@nullplatform/plugin`, compiled to one binary with every backend's client (the AWS SDK,
+the Azure SDK, Google's auth library; Vault over its HTTP API). `PARAMETERS_PROVIDER` in the
+worker's environment names the backend it serves, set on the agent's worker pin. A `parameters`
+notification channel, of type `package-exec`, makes the agent spawn that worker in its own pod
+and hand it every `parameter:<action>` of the parameters bound to that provider. No bash, no `jq`, no CLI: an action is a call to the backend's API.
 
 The channel comes from the `parameter_storage_definition_agent_association` module in
 [tofu-modules](https://github.com/nullplatform/tofu-modules) with `worker_orchestrator = true`.
@@ -44,19 +44,20 @@ The channel comes from the `parameter_storage_definition_agent_association` modu
 
 ```
 .
-├── Dockerfile               # one image per provider: --build-arg PROVIDER=<slug>
+├── Dockerfile               # the worker image, every provider in it
 ├── mise.toml                # run a provider locally as a package (np package run)
 ├── Makefile                 # test targets (see Testing)
 ├── testing/                 # scope-testing framework (git submodule)
 ├── docs/                    # architecture, configuration, adding a provider
 ├── src/
+│   ├── main.ts              # the image's entry: the provider PARAMETERS_PROVIDER names
 │   ├── worker.ts            # the four routes: parameter:store / retrieve / delete / notify
 │   ├── context.ts           # the request a notification carries
 │   ├── naming.ts            # the canonical path every backend's name is built from
 │   ├── settings.ts          # provider attributes > environment > default
 │   ├── failure.ts           # a failure in the bash's words: causes, fixes, the backend's answer
 │   ├── aws/                 # the role to assume, its credentials kept until they expire
-│   └── providers/<slug>/    # index.ts (the provider) and main.ts (the image's entry)
+│   └── providers/           # index.ts (the provider per slug) and <slug>/index.ts (each provider)
 ├── test/                    # one suite per provider against a fake of its client
 └── parameters/providers/<slug>/   # Tofu install specs and docs of each backend
 ```
@@ -102,14 +103,14 @@ The Tofu and integration runners are wired through the `testing/` submodule
 
 ## Run locally as a package
 
-`np package run` runs one provider's worker on your machine the way production does: a local
+`np package run` runs the worker on your machine the way production does: a local
 controlplane-agent that registers with the platform, spawns the worker image built from this
-repo, and hands it every action routed to it. `PROVIDER` names the backend
-(`aws-secrets-manager` by default):
+repo, and hands it every action routed to it. `PROVIDER` names the backend the worker serves
+(`aws-secrets-manager` by default), passed to it as `PARAMETERS_PROVIDER`:
 
 | Command | Runs | Does |
 |---|---|---|
-| `PROVIDER=hashicorp-vault np package build --image` | `mise run build:image` | Builds `parameters-hashicorp-vault:dev` |
+| `np package build --image` | `mise run build:image` | Builds `parameters:dev` |
 | `PROVIDER=hashicorp-vault np package run` | `mise run run` | Builds the image, then starts the local agent |
 
 Prerequisites: **Docker** with host networking (Linux as is; on Docker Desktop enable *host
@@ -122,7 +123,7 @@ eval "$(aws configure export-credentials --format env)"   # cloud credentials as
 PROVIDER=aws-secrets-manager np package run --log-level DEBUG   # Ctrl+C to stop
 ```
 
-The agent is tagged `package:parameters-<provider>` and `local:<your user>`. It receives an
+The agent is tagged `package:parameters` and `local:<your user>`. It receives an
 action only when the service's notification channel selects those tags, so point a channel at
 `local:<your user>` to route work to your machine.
 
@@ -136,10 +137,10 @@ forward nothing.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PROVIDER` | `aws-secrets-manager` | The backend whose worker is built and run |
+| `PROVIDER` | `aws-secrets-manager` | The backend the worker serves (its `PARAMETERS_PROVIDER`) |
 | `NP_API_KEY` | required | The key the agent registers with (`--api-key` also sets it) |
 | `NP_LOG_LEVEL` | `INFO` | Agent log level (`--log-level` also sets it) |
-| `NP_PACKAGE_SLUG` | `parameters-<provider>` | The slug in the `package:<slug>` tag, when published under another slug |
+| `NP_PACKAGE_SLUG` | `parameters` | The slug in the `package:<slug>` tag, when published under another slug |
 | `NP_LOCAL_USER` | `$USER` | The value of the `local:<user>` tag |
 | `NP_AGENT_IMAGE` | `controlplane-agent:latest` | The agent image; needs worker rules (0.11.1+) |
 
@@ -152,8 +153,8 @@ forward nothing.
 | shellcheck | PR | every bash script |
 | tests | PR | `tofu fmt`/`validate` of every provider spec, and the worker's tests and type-check |
 | trivy | PR | IaC misconfiguration and image scan, to the Security tab |
-| beta | PR (opened, push, reopened) | publish-test-image-oci, once per provider: pushes `beta/<image>:test-<branch>-<short sha>` and registers it as a nullplatform artifact |
-| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` of every provider's image to ECR Public → nullplatform artifacts → GitHub release |
+| beta | PR (opened, push, reopened) | publish-test-image-oci: pushes `beta/<image>:test-<branch>-<short sha>` and registers it as a nullplatform artifact |
+| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` of the image to ECR Public → nullplatform artifacts → GitHub release |
 | auto-merge-release | after release | merges the release PR |
 | dependabot | daily / weekly | base image and shared workflow bumps |
 
@@ -161,9 +162,9 @@ forward nothing.
 
 | Image | Moved by | Use it to |
 |---|---|---|
-| `agent-plugins/services/parameters-<provider>:vX.Y.Z` | its release, once | pin an exact version |
-| `agent-plugins/services/parameters-<provider>:latest` | each release | follow the last released version |
-| `beta/agent-plugins/services/parameters-<provider>:test-<branch>-<short sha>` | each push to a pull request of this repository | deploy a change to a test scope before merging it |
+| `agent-plugins/services/parameters:vX.Y.Z` | its release, once | pin an exact version |
+| `agent-plugins/services/parameters:latest` | each release | follow the last released version |
+| `beta/agent-plugins/services/parameters:test-<branch>-<short sha>` | each push to a pull request of this repository | deploy a change to a test scope before merging it |
 
 Beta images live in a separate repository that the beta role can write and the production role cannot, so a beta can never overwrite a released image. Pull requests from this repository can assume the beta role (fork and bot pull requests are skipped), and the tag carries the commit SHA, so two pull requests never overwrite each other by accident. Nothing deletes beta tags: they are ephemeral by convention. Each beta is also registered as its own nullplatform oci_image artifact (the `beta/` repository, under `NP_ARTIFACT_NRN`), separate from the release artifact, so it can be deployed to a test scope from the platform.
 

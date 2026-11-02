@@ -49,11 +49,11 @@ come from the environment only, never from the attributes.
 ## Adding one
 
 1. `src/providers/<slug>/index.ts` exporting `SLUG` and a factory `<name>(options?)` that takes
-   the backend's client (or a fake) and the environment, and `main.ts` running
-   `main(parametersWorker(<name>(), workerConfigOf(SLUG)))`.
+   the backend's client (or a fake) and the environment, added to `PROVIDERS` in
+   `src/providers/index.ts`.
 2. `test/<slug>.test.ts` against a fake of the client: configuration errors, store with and without
    an existing secret, retrieve at a version and not found, delete and its idempotency.
 3. `parameters/providers/<slug>/specs/` (the install specs with the configuration template, slug =
    `<slug>`) and `docs/`.
-4. The provider in the matrix of `.github/workflows/beta.yml` and `release.yml`: its image is
-   `agent-plugins/services/parameters-<slug>`.
+4. Nothing in CI: the one image carries every provider, and `PARAMETERS_PROVIDER=<slug>`
+   selects it.
