@@ -55,14 +55,35 @@ jobs:
           fi
           exit "$missing"
 
+  # The first image cuts the release (release-please) and publishes under its tag;
+  # the other backends' images publish under that same tag, with release-please
+  # skipped, so one push to main releases every provider at one version.
   release:
     needs: preflight
     uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
     with:
-      image_name: agent-plugins/services/parameters
+      image_name: agent-plugins/services/parameters-aws-secrets-manager
+      build_args: PROVIDER=aws-secrets-manager
       # latest always points at the last release; pull requests publish to beta/ instead.
       also_tag_latest: true
       existing_tag: ${{ inputs.existing_tag || '' }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
+      artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
+
+  release-others:
+    needs: release
+    if: ${{ !cancelled() && (needs.release.outputs.release_created == 'true' || inputs.existing_tag != '') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [aws-parameter-store, azure-key-vault, gcp-secret-manager, hashicorp-vault]
+    uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
+    with:
+      image_name: agent-plugins/services/parameters-${{ matrix.provider }}
+      build_args: PROVIDER=${{ matrix.provider }}
+      also_tag_latest: true
+      existing_tag: ${{ inputs.existing_tag || needs.release.outputs.tag_name }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}

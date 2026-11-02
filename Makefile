@@ -6,19 +6,18 @@ test:
 	@echo ""
 	@echo "Available test levels:"
 	@echo "  make test-all          Run all tests"
-	@echo "  make test-unit         Run BATS unit tests"
+	@echo "  make test-unit         Run the worker's tests (bun) and type-check"
 	@echo "  make test-tofu         Run OpenTofu tests"
 	@echo "  make test-integration  Run integration tests"
 
 # Run all tests
 test-all: test-unit test-tofu test-integration
 
-# Run BATS unit tests.
-# The parameters module keeps its tests under parameters/tests/{utils,providers}
-# (mirroring the source tree) rather than the <module>/<component>/tests layout
-# the shared runner discovers, so run bats directly against that tree.
+# The worker's tests: every provider against fakes of its backend, no network.
 test-unit:
-	@bats -r parameters/tests
+	@bun install --frozen-lockfile
+	@bunx tsc --noEmit -p .
+	@bun test
 
 # Run OpenTofu tests (provider install specs) via the shared runner
 test-tofu:
@@ -41,7 +40,7 @@ help:
 	@echo "Test targets:"
 	@echo "  test              Show available test options"
 	@echo "  test-all          Run all tests"
-	@echo "  test-unit         Run BATS unit tests (parameters/tests)"
+	@echo "  test-unit         Run the worker's tests and type-check"
 	@echo "  test-tofu         Run OpenTofu tests"
 	@echo "  test-integration  Run integration tests"
 	@echo ""

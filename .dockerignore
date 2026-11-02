@@ -1,4 +1,4 @@
-# Only what the agent runs goes into the image.
+# Only what the worker is built from goes into the image.
 .git
 .github
 Dockerfile
@@ -9,6 +9,7 @@ mise.toml
 Makefile
 docs
 testing
-parameters/tests
-**/docs
-**/specs
+test
+node_modules
+dist
+parameters

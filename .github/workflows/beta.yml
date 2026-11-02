@@ -32,10 +32,17 @@ jobs:
       ${{ !github.event.repository.is_template &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.user.type != 'Bot' }}
+    # One image per backend, each built from the one Dockerfile with PROVIDER
+    # naming the folder under src/providers it compiles.
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [aws-secrets-manager, aws-parameter-store, azure-key-vault, gcp-secret-manager, hashicorp-vault]
     uses: nullplatform/actions-nullplatform/.github/workflows/publish-test-image-oci.yml@v1
     with:
       # Always `beta/` + the image_name in release.yml.
-      image_name: beta/agent-plugins/services/parameters
+      image_name: beta/agent-plugins/services/parameters-${{ matrix.provider }}
+      build_args: PROVIDER=${{ matrix.provider }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_BETA_ROLE_ARN }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}

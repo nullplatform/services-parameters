@@ -2,7 +2,7 @@ name: tests
 
 # shellcheck and the trivy IaC scan run in their own workflows (shellcheck.yml,
 # trivy.yml); this one lints and validates the provider install specs and runs
-# the BATS unit tests.
+# the worker's tests and type-check.
 
 on:
   pull_request:
@@ -36,23 +36,21 @@ jobs:
             echo "::endgroup::"
           done
 
-  unit-tests:
-    name: Unit Tests
+  worker:
+    name: Worker
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
         with:
-          submodules: recursive
+          bun-version: latest
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y bats jq
+        run: bun install --frozen-lockfile
 
-      - name: Install gomplate
-        run: |
-          sudo curl -fsSL -o /usr/local/bin/gomplate \
-            https://github.com/hairyhenderson/gomplate/releases/download/v4.3.3/gomplate_linux-amd64
-          sudo chmod +x /usr/local/bin/gomplate
-          gomplate --version
+      - name: Type-check
+        run: bunx tsc --noEmit -p .
 
-      - name: Run unit tests
-        run: make test-unit
+      - name: Run the tests
+        run: bun test
