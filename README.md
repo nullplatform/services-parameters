@@ -43,6 +43,45 @@ module in [tofu-modules](https://github.com/nullplatform/tofu-modules) with
 one, where the agent clones the repository and runs the entrypoint in its own
 container.
 
+### Agent setup
+
+The agent that receives the channel spawns the worker. It needs
+controlplane-agent 0.11.1 or later and the `nullplatform-agent` Helm chart
+2.36.0 or later, the first with `worker` values (tested with chart 3.1.0 and
+agent 0.15.0 on EKS). Pin the package to the image, so the agent never resolves
+it dynamically:
+
+```yaml
+worker:
+  backend: kubernetes
+  security: plaintext        # or mtls; charts before 3.1.0 call it "insecure"
+  pins:
+    - package: parameters
+      image: public.ecr.aws/nullplatform/agent-plugins/services/parameters:v1.0.0
+      serviceAccount: nullplatform-agent   # the SA that holds the cloud identity
+  defaults:
+    env:
+      AWS_REGION: us-east-1
+```
+
+- **Cloud identity.** The providers run in the worker pod, not in the agent, so
+  the worker needs the identity the agent had: IRSA on EKS (AWS providers),
+  Workload Identity on GKE (GCP Secret Manager), the ServiceAccount bound to the
+  Vault Kubernetes auth role. Point the pin's `serviceAccount` at the agent's
+  ServiceAccount, or at a dedicated one bound to the same role. Azure Key Vault
+  authenticates with the service principal in the provider config, so it needs
+  nothing here.
+- **`AWS_REGION`.** The AWS providers read it from the environment. The worker
+  does not inherit the agent's environment, so set it under `worker.defaults.env`
+  or on the pin.
+- **IAM provider lookup.** Before each AWS call the provider looks up the
+  scope's `identity-access-control` provider to assume its role. If the agent's
+  API key can't read it, stderr shows `IAM provider lookup failed` and the call
+  goes on with the worker's own identity.
+- **Uninstalling.** Pinned workers are never reaped, and `helm uninstall` of the
+  agent doesn't remove them. Delete what the agent created:
+  `kubectl delete deploy,svc,secret -n <namespace> -l nullplatform.com/agent-instance=<release>`.
+
 ## Repository layout
 
 ```
