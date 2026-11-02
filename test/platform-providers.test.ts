@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
 import type { Api } from "@nullplatform/plugin";
-import { betterProvider, dimensionFit, dimensionsQuery, providerOf } from "../src/platform/providers";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { REMEMBER_MS, betterProvider, dimensionFit, dimensionsQuery, forgetProviders, providerOf } from "../src/platform/providers";
 import { fakeApi } from "./support";
 
 const ACCOUNT = "organization=1:account=2";
@@ -25,6 +25,8 @@ describe("a provider's fit to a request's dimensions", () => {
 });
 
 describe("the provider of a category over an NRN", () => {
+  beforeEach(forgetProviders);
+
   test("asks the category, its specifications, the providers with their ascendants, and reads the winner whole", async () => {
     const { api, calls } = fakeApi([
       { nrn: ACCOUNT, attributes: { iam_role_arns: { arns: [{ selector: "parameter_store", arn: "arn:account" }] } } },
@@ -47,6 +49,7 @@ describe("the provider of a category over an NRN", () => {
     expect(provider?.attributes).toEqual({ server: { url: "http://prometheus" } });
     expect(calls[2]).toBe(`GET /provider {"nrn":"${APPLICATION}","specification_id":"s1","show_ascendants":true}`);
     const none = fakeApi([]);
+    forgetProviders();
     expect(await providerOf(none.api as Api, "metrics", APPLICATION, {})).toBeUndefined();
     expect(none.calls).toEqual(['GET /category {"slug":"metrics"}']);
   });
@@ -56,5 +59,22 @@ describe("the provider of a category over an NRN", () => {
     expect(await providerOf(api as Api, "identity-access-control", APPLICATION, { environment: "prod" })).toBeUndefined();
     const empty = { ...fakeApi([{ nrn: ACCOUNT }]).api as Record<string, unknown>, provider_specification: { get: async () => ({ results: [] }) } };
     expect(await providerOf(empty as unknown as Api, "identity-access-control", APPLICATION, {})).toBeUndefined();
+  });
+
+  test("remembers a resolution for a minute, per category, NRN and dimensions, and forgets a failed one", async () => {
+    let clock = 1_000;
+    const now = () => clock;
+    const { api, calls } = fakeApi([{ nrn: ACCOUNT, attributes: { server: { url: "http://prometheus" } } }]);
+    await providerOf(api as Api, "metrics", APPLICATION, {}, now);
+    await providerOf(api as Api, "metrics", APPLICATION, {}, now);
+    expect(calls.length).toBe(4);
+    await providerOf(api as Api, "metrics", APPLICATION, { environment: "prod" }, now);
+    expect(calls.length).toBe(8);
+    clock += REMEMBER_MS;
+    await providerOf(api as Api, "metrics", APPLICATION, {}, now);
+    expect(calls.length).toBe(12);
+    const failing = { category: { get: async () => { throw new Error("down"); } } };
+    await expect(providerOf(failing as unknown as Api, "metrics", ACCOUNT, {}, now)).rejects.toThrow("down");
+    await expect(providerOf(failing as unknown as Api, "metrics", ACCOUNT, {}, now)).rejects.toThrow("down");
   });
 });

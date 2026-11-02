@@ -6,7 +6,9 @@
  * do not contradict the request's, and the best match: the longest NRN, then
  * the most dimensions the request asked for, then the fewest it never asked
  * about, then the lowest id. A listing carries no attributes, so the winner
- * is read whole.
+ * is read whole. Providers change rarely and every action reads one, so a
+ * resolution is remembered for a short while per category, NRN and
+ * dimensions.
  */
 
 import type { Api } from "@nullplatform/plugin";
@@ -79,8 +81,35 @@ export function betterProvider(left: ProviderRow, right: ProviderRow, dimensions
   return left.id <= right.id ? left : right;
 }
 
-/** The provider of `category` over `nrn` for a request of `dimensions`, whole; undefined when none is configured. */
-export async function providerOf(api: Api, category: string, nrn: string, dimensions: Record<string, string>): Promise<Provider | undefined> {
+/** How long a resolution is reused, per category, NRN and dimensions. */
+export const REMEMBER_MS = 60_000;
+
+interface Remembered {
+  at: number;
+  provider: Promise<Provider | undefined>;
+}
+
+const remembered = new Map<string, Remembered>();
+
+/** Forgets every resolution: after a provider was changed, or between tests. */
+export function forgetProviders(): void {
+  remembered.clear();
+}
+
+/** The provider of `category` over `nrn` for a request of `dimensions`, whole; undefined when none is configured. Resolved once per REMEMBER_MS; a failed resolution is not kept. */
+export function providerOf(api: Api, category: string, nrn: string, dimensions: Record<string, string>, now: () => number = Date.now): Promise<Provider | undefined> {
+  const key = `${category}|${nrn}|${dimensionsQuery(dimensions)}`;
+  const kept = remembered.get(key);
+  if (kept && now() - kept.at < REMEMBER_MS) {
+    return kept.provider;
+  }
+  const provider = resolveProvider(api, category, nrn, dimensions);
+  remembered.set(key, { at: now(), provider });
+  provider.catch(() => remembered.delete(key));
+  return provider;
+}
+
+async function resolveProvider(api: Api, category: string, nrn: string, dimensions: Record<string, string>): Promise<Provider | undefined> {
   const categories = (await api.category.get<Listing<Category>>({ slug: category })).results ?? [];
   if (categories.length === 0) {
     return undefined;

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { forgetProviders } from "../src/platform/providers";
 import { AssumedRoles, arnForSelector, awsAccess, resolveRoleArn, type RoleSelection } from "../src/aws/role";
 import { fakeContext, fakeSender, requestFor } from "./support";
 
@@ -46,6 +47,8 @@ describe("assumed credentials", () => {
 });
 
 describe("the access of an operation", () => {
+  beforeEach(forgetProviders);
+
   test("needs the region, runs as the agent when nothing names a role, and asks the IAM provider at the request's NRN", async () => {
     const roles = new AssumedRoles(() => fakeSender({}).sender, AssumeRole as never);
     const request = requestFor("aws-secrets-manager");
