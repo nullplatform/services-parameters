@@ -78,6 +78,26 @@ export function requestOf(payload: Payload): ParameterRequest {
   };
 }
 
+/** The requests a `parameter:retrieve_batch` payload carries: its shared metadata with each of its `values`; a payload with none is refused. */
+export function batchRequestsOf(payload: Payload): ParameterRequest[] {
+  const shared = requestOf(payload);
+  const values = Array.isArray(payload.values) ? (payload.values as unknown[]).map(record) : [];
+  if (values.length === 0) {
+    throw new Failure("MISSING_VALUES", {
+      what: "A parameter:retrieve_batch notification carries no values",
+      causes: ["The notification payload is malformed"],
+      fixes: ["Send the values to retrieve in .values[], each with its external_id"],
+    });
+  }
+  return values.map((value) => ({
+    ...shared,
+    kind: value.secret === true ? "secret" : value.secret === false ? "parameter" : "",
+    name: text(value.parameter_name),
+    encoding: text(value.encoding),
+    externalId: externalIdOf(text(value.external_id)),
+  }));
+}
+
 /** The NRN of the request's entities, the scope included when the value is scoped. */
 export function nrnOf(request: ParameterRequest): string {
   const { entities } = request;

@@ -1,0 +1,54 @@
+{
+  "notification": {
+    "entities": {
+      "organization": "1255165411",
+      "organization_slug": "acme",
+      "account": "95118862",
+      "account_slug": "prod",
+      "namespace": "37094320",
+      "namespace_slug": "billing",
+      "application": "321402625",
+      "application_slug": "api"
+    },
+    "dimensions": {
+      "environment": "production"
+    },
+    "provider": {
+      "id": 7,
+      "nrn": "organization=1255165411:account=95118862",
+      "specification_id": "9b1d8e8a-5f3c-4c0a-9b1e-2f8e5c1a7d42",
+      "specification_slug": "aws-secrets-manager",
+      "attributes": {
+        "sensibility": {
+          "applies_to": [
+            "secret"
+          ]
+        },
+        "setup": {
+          "kms_key_id": ""
+        }
+      }
+    },
+    "action": "parameter:retrieve_batch",
+    "values": [
+      {
+        "external_id": "organization=acme-1255165411/account=prod-95118862/namespace=billing-37094320/application=api-321402625/environment=production/DB_PASSWORD-42#a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        "parameter_name": "DB_PASSWORD",
+        "secret": true,
+        "encoding": "plain"
+      },
+      {
+        "external_id": "organization=acme-1255165411/account=prod-95118862/namespace=billing-37094320/application=api-321402625/environment=production/API_TOKEN-43#b2c3d4e5-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+        "parameter_name": "API_TOKEN",
+        "secret": true,
+        "encoding": "plain"
+      },
+      {
+        "external_id": "organization=acme-1255165411/account=prod-95118862/namespace=billing-37094320/application=api-321402625/environment=production/LOG_LEVEL-44#c3d4e5f6-7a8b-9c0d-1e2f-3a4b5c6d7e8f",
+        "parameter_name": "LOG_LEVEL",
+        "secret": false,
+        "encoding": "plain"
+      }
+    ]
+  }
+}

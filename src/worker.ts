@@ -8,11 +8,12 @@
  */
 
 import { definePlugin, where, type Context, type Payload, type Route } from "@nullplatform/plugin";
-import { requestOf, type ParameterRequest } from "./context";
+import { batchRequestsOf, requestOf, type ParameterRequest } from "./context";
 import { Failure } from "./failure";
 import { DONE, type Provider, type Session } from "./provider";
 import deleteSample from "./samples/delete.json" with { type: "json" };
 import notifySample from "./samples/notify.json" with { type: "json" };
+import retrieveBatchSample from "./samples/retrieve-batch.json" with { type: "json" };
 import retrieveSample from "./samples/retrieve.json" with { type: "json" };
 import storeSample from "./samples/store.json" with { type: "json" };
 
@@ -41,6 +42,18 @@ export function routed(providers: ReadonlyMap<string, Provider>, payload: Payloa
   return { request, provider };
 }
 
+/** The values of a batch, from the backend's own batch read; a backend without one refuses, and the platform retrieves them one by one. */
+async function performBatch(session: Session, provider: Provider, requests: ParameterRequest[]): Promise<unknown> {
+  if (!session.retrieveBatch) {
+    throw new Failure("NOT_IMPLEMENTED", {
+      what: `${provider.slug} has no batch retrieve; the platform retrieves these values one by one`,
+      causes: ["The backend has no batch read, or this worker does not use it yet"],
+      fixes: ["Nothing to do: single retrieves still answer every value"],
+    });
+  }
+  return session.retrieveBatch(requests);
+}
+
 async function perform(session: Session, action: Action, request: ParameterRequest): Promise<unknown> {
   if (action === "notify") {
     return session.notify ? session.notify(request) : DONE;
@@ -64,9 +77,22 @@ export function parametersWorker(providers: Provider[], config: WorkerConfig) {
       return perform(session, action, request);
     },
   });
+  const batchRoute: Route = {
+    name: "parameter:retrieve_batch",
+    match: where({ action: "parameter:retrieve_batch" }),
+    output: () => "raw" as const,
+    channel,
+    sample: retrieveBatchSample.notification,
+    handler: async (payload: Payload, context: Context) => {
+      const { provider } = routed(bySlug, payload);
+      const requests = batchRequestsOf(payload);
+      const session = await provider.open(requests[0], context);
+      return performBatch(session, provider, requests);
+    },
+  };
   return definePlugin({
     package: { name: config.package.name, version: config.package.version, description: `Parameters and secrets stored in ${slugs.join(", ")}` },
     agent: { sources: config.sources },
-    routes: ACTIONS.map(route),
+    routes: [...ACTIONS.map(route), batchRoute],
   });
 }

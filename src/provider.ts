@@ -18,6 +18,11 @@ export interface Retrieved {
   value: string;
 }
 
+/** The values of a batch that could be read; one left out is retrieved by the platform on its own. */
+export interface RetrievedBatch {
+  values: Array<{ external_id: string; value: string }>;
+}
+
 export interface Done {
   success: true;
 }
@@ -25,6 +30,8 @@ export interface Done {
 export interface Session {
   store(request: ParameterRequest): Promise<Stored>;
   retrieve(request: ParameterRequest): Promise<Retrieved>;
+  /** Several values of one request's provider and entities in one call; a backend without it answers NOT_IMPLEMENTED and the platform retrieves them one by one. */
+  retrieveBatch?(requests: ParameterRequest[]): Promise<RetrievedBatch>;
   delete(request: ParameterRequest): Promise<Done>;
   /** A per-provider side effect on notify; none answers the default ack. */
   notify?(request: ParameterRequest): Promise<Done>;

@@ -26,7 +26,7 @@ nullplatform ── parameter:<action> notification ──▶ agent ──▶ wo
                                                                ▼
                        src/providers/<slug>/index.ts   open(): the configuration (src/settings.ts:
                                                        attributes, then environment, then default)
-                                                       and the credentials; store / retrieve /
+                                                       and the credentials; store / retrieve / retrieve_batch /
                                                        delete / notify against the backend's API
 ```
 

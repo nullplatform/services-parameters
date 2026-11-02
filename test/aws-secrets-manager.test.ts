@@ -63,3 +63,52 @@ describe("aws-secrets-manager", () => {
     await expect(refused.session.delete(refused.request)).rejects.toMatchObject({ code: "DELETE_FAILED" });
   });
 });
+
+describe("a batch of secrets", () => {
+  const base = "organization=acme-1255165411/account=prod-95118862/namespace=billing-37094320/application=api-321402625";
+  const envelope = (value: string) => JSON.stringify({ value });
+  const batchRequests = (handles: string[]) => handles.map((handle) => requestFor("aws-secrets-manager", { external_id: handle }));
+
+  test("reads up to 20 per call, re-reads another version or a refused one alone, and leaves out what still fails", async () => {
+    const handles = [`${base}/A-1#v1`, `${base}/B-2#v2`, `${base}/C-3#v3`, `${base}/D-4#v4`, `${base}/E-5`];
+    const { session, sent } = await open({
+      BatchGetSecretValueCommand: (input: { SecretIdList: string[] }) => ({
+        SecretValues: [
+          { Name: input.SecretIdList[0], VersionId: "v1", SecretString: envelope("a") },
+          { Name: input.SecretIdList[1], VersionId: "v2-newer", SecretString: envelope("b-newer") },
+          { Name: input.SecretIdList[4], VersionId: "v5", SecretString: envelope("e") },
+        ],
+        Errors: [{ SecretId: input.SecretIdList[2], ErrorCode: "AccessDeniedException", Message: "no" }],
+      }),
+      GetSecretValueCommand: (input: { SecretId: string; VersionId?: string }) => {
+        if (input.SecretId.endsWith("/B-2")) { return { SecretString: envelope("b") }; }
+        if (input.SecretId.endsWith("/D-4")) { return { SecretString: envelope("d") }; }
+        throw awsError("AccessDeniedException");
+      },
+    });
+    const answer = await session.retrieveBatch!(batchRequests(handles));
+    expect(answer.values.sort((left, right) => left.external_id.localeCompare(right.external_id))).toEqual([
+      { external_id: `${base}/A-1#v1`, value: "a" },
+      { external_id: `${base}/B-2#v2`, value: "b" },
+      { external_id: `${base}/D-4#v4`, value: "d" },
+      { external_id: `${base}/E-5`, value: "e" },
+    ]);
+    const batch = sent.filter((call) => call.name === "BatchGetSecretValueCommand");
+    expect(batch.length).toBe(1);
+    expect(batch[0].input.SecretIdList).toEqual(handles.map((handle) => `nullplatform/${handle.split("#")[0]}`));
+    const singles = sent.filter((call) => call.name === "GetSecretValueCommand").map((call) => `${call.input.SecretId.split("/").pop()}@${call.input.VersionId ?? "current"}`).sort();
+    expect(singles).toEqual(["B-2@v2", "C-3@v3", "D-4@v4"]);
+  });
+
+  test("reads every secret alone when the batch call itself fails, and chunks a large batch", async () => {
+    const handles = Array.from({ length: 23 }, (_, index) => `${base}/S-${index}#v`);
+    const { session, sent } = await open({
+      BatchGetSecretValueCommand: () => { throw awsError("ThrottlingException"); },
+      GetSecretValueCommand: (input: { SecretId: string }) => ({ SecretString: envelope(input.SecretId.split("/").pop() as string) }),
+    });
+    const answer = await session.retrieveBatch!(batchRequests(handles));
+    expect(answer.values.length).toBe(23);
+    expect(sent.filter((call) => call.name === "BatchGetSecretValueCommand").map((call) => call.input.SecretIdList.length).sort()).toEqual([20, 3]);
+    expect(sent.filter((call) => call.name === "GetSecretValueCommand").length).toBe(23);
+  });
+});

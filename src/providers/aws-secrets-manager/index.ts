@@ -2,18 +2,22 @@
  * AWS Secrets Manager. One secret per parameter under `nullplatform/<canonical
  * path>`, each store a new version of it (CreateSecret the first time,
  * PutSecretValue after), so the history stays inside one secret and costs one.
+ * A batch reads up to 20 secrets per BatchGetSecretValue, which answers the
+ * current version of each: a handle naming another version, or a secret the
+ * batch could not read, is read on its own; one that still fails is left out,
+ * and the platform retrieves it one by one.
  * The handle carries the VersionId AWS returns; retrieve reads that version,
  * delete removes the secret with every version at once.
  */
 
-import { CreateSecretCommand, DeleteSecretCommand, GetSecretValueCommand, PutSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { BatchGetSecretValueCommand, CreateSecretCommand, DeleteSecretCommand, GetSecretValueCommand, PutSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { Context } from "@nullplatform/plugin";
 import { assumedRolesOf, clientOptions, realAwsClients, type AwsClients } from "../../aws/clients";
 import { awsAccess, type AwsAccess, type RoleSelection, type Sender } from "../../aws/role";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure, messageOf } from "../../failure";
 import { canonicalPath } from "../../naming";
-import { DONE, type Provider, type Session } from "../../provider";
+import { DONE, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
 
 export const SLUG = "aws-secrets-manager";
@@ -34,6 +38,16 @@ export interface SecretsManagerOptions {
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "");
 
 /** The envelope a secret holds, as the bash wrote it. */
+/** How many secrets one BatchGetSecretValue reads. */
+export const BATCH_SIZE = 20;
+
+interface BatchAnswer {
+  SecretValues?: Array<{ Name?: string; VersionId?: string; SecretString?: string }>;
+  Errors?: Array<{ SecretId?: string; ErrorCode?: string; Message?: string }>;
+}
+
+const chunks = <Item>(items: Item[], size: number): Item[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
+
 export const envelopeOf = (request: ParameterRequest, path: string, storedAt: Date): string => JSON.stringify({ parameter_id: request.parameterId ? Number(request.parameterId) : null, value: request.value, stored_at: storedAt.toISOString().replace(/\.\d{3}Z$/, "Z"), external_id: path });
 
 class SecretsManagerSession implements Session {
@@ -79,6 +93,48 @@ class SecretsManagerSession implements Session {
       throw new Failure("RETRIEVE_FAILED", { what: `Failed to retrieve secret '${name}' from AWS Secrets Manager`, causes: ["IAM principal lacks secretsmanager:GetSecretValue", "KMS key permission missing (kms:Decrypt) for CMK-encrypted secrets", `Region '${this.region}' unreachable`, ...(version ? [`Requested version '${version}' does not exist for this secret`] : [])], fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`], underlying: messageOf(error) });
     }
     return { value: valueOf(answer.SecretString ?? "") };
+  }
+
+  async retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
+    const byName = new Map(requests.map((request) => [`${NAME_PREFIX}${request.externalId.path}`, request]));
+    const values: RetrievedBatch["values"] = [];
+    const alone: ParameterRequest[] = [];
+    await Promise.all(
+      chunks([...byName.keys()], BATCH_SIZE).map(async (names) => {
+        let answer: BatchAnswer;
+        try {
+          answer = await this.secrets.send(new BatchGetSecretValueCommand({ SecretIdList: names }));
+        } catch (error) {
+          this.context.log.warn(`batch read of ${names.length} secrets failed, reading them one by one: ${messageOf(error)}`);
+          alone.push(...names.map((name) => byName.get(name) as ParameterRequest));
+          return;
+        }
+        const read = new Set<string>();
+        for (const secret of answer.SecretValues ?? []) {
+          const request = secret.Name === undefined ? undefined : byName.get(secret.Name);
+          if (!request) {
+            continue;
+          }
+          read.add(secret.Name as string);
+          if (request.externalId.version && secret.VersionId !== request.externalId.version) {
+            alone.push(request);
+            continue;
+          }
+          values.push({ external_id: handleOf(request.externalId.path, request.externalId.version), value: valueOf(secret.SecretString ?? "") });
+        }
+        alone.push(...names.filter((name) => !read.has(name)).map((name) => byName.get(name) as ParameterRequest));
+      }),
+    );
+    await Promise.all(
+      alone.map(async (request) => {
+        try {
+          values.push({ external_id: handleOf(request.externalId.path, request.externalId.version), value: (await this.retrieve(request)).value });
+        } catch (error) {
+          this.context.log.warn(`secret '${NAME_PREFIX}${request.externalId.path}' left out of the batch: ${messageOf(error)}`);
+        }
+      }),
+    );
+    return { values };
   }
 
   async delete(request: ParameterRequest) {
