@@ -5,8 +5,7 @@ import { azureKeyVault, SLUG as AZURE_KEY_VAULT } from "./azure-key-vault";
 import { gcpSecretManager, SLUG as GCP_SECRET_MANAGER } from "./gcp-secret-manager";
 import { hashicorpVault, SLUG as HASHICORP_VAULT } from "./hashicorp-vault";
 
-export const PROVIDER_VARIABLE = "PARAMETERS_PROVIDER";
-
+/** Every backend the image carries, by the slug the platform names in `provider.specification_slug`. */
 export const PROVIDERS: Record<string, () => Provider> = {
   [AWS_PARAMETER_STORE]: () => awsParameterStore(),
   [AWS_SECRETS_MANAGER]: () => awsSecretsManager(),
@@ -15,11 +14,7 @@ export const PROVIDERS: Record<string, () => Provider> = {
   [HASHICORP_VAULT]: () => hashicorpVault(),
 };
 
-export function providerOf(env: Record<string, string | undefined> = process.env): Provider {
-  const slug = env[PROVIDER_VARIABLE] ?? "";
-  const factory = PROVIDERS[slug];
-  if (!factory) {
-    throw new Error(`${PROVIDER_VARIABLE} must name one of ${Object.keys(PROVIDERS).join(", ")}, and it is "${slug}"`);
-  }
-  return factory();
+/** One of each backend: the worker picks the one each request names. */
+export function allProviders(): Provider[] {
+  return Object.values(PROVIDERS).map((factory) => factory());
 }

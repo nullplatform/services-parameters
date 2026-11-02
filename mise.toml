@@ -1,11 +1,8 @@
 # ---------------------------------------------------------------------------
-# Run the worker locally as a package: `np package run` (or `mise run run`),
-# with PROVIDER naming the backend it serves (aws-secrets-manager by default). `np package build --image` runs `build:image`, `np package run`
+# Run the worker locally as a package: `np package run` (or `mise run run`); the
+# worker serves every backend, each request names its own. `np package build --image` runs `build:image`, `np package run`
 # runs `run`. See "Run locally as a package" in the README.
 # ---------------------------------------------------------------------------
-
-[env]
-PROVIDER = "aws-secrets-manager"
 
 [tasks."build:image"]
 description = "Build the worker image"
@@ -20,8 +17,8 @@ description = "Type-check the package"
 run = "bunx tsc --noEmit -p ."
 
 [tasks.describe]
-description = "Print the manifest of the worker serving $PROVIDER"
-run = 'PARAMETERS_PROVIDER="$PROVIDER" bun src/main.ts --describe'
+description = "Print the worker's manifest"
+run = 'bun src/main.ts --describe'
 
 # Runs the service the way production does: a controlplane-agent with the
 # worker orchestrator (docker backend) that SPAWNS the worker container and
@@ -35,7 +32,7 @@ run = 'PARAMETERS_PROVIDER="$PROVIDER" bun src/main.ts --describe'
 # container; the JSON goes into an NP_WORKER_RULES entry, which is how the agent
 # hands env to the WORKER it spawns. Run without the CLI and both are empty.
 [tasks.run]
-description = "Run locally: an agent (docker backend) that spawns the worker serving $PROVIDER"
+description = "Run locally: an agent (docker backend) that spawns the worker"
 depends = ["build:image"]
 run = """
 set -eu
@@ -43,7 +40,6 @@ set -eu
 slug="${NP_PACKAGE_SLUG:-parameters}"
 env_json='{}'
 [ -n "${NP_PACKAGE_ENV_JSON:-}" ] && env_json="$NP_PACKAGE_ENV_JSON"
-env_json=$(printf '%s' "$env_json" | jq -c --arg provider "$PROVIDER" '. + {PARAMETERS_PROVIDER: $provider}')
 worker_rules='[{"match":{"package":"'"$slug"'"},"env":'"$env_json"'}]'
 docker rm -f "np-$slug-agent" >/dev/null 2>&1 || true
 # A worker left by a previous run would be adopted as is, old image included.

@@ -32,10 +32,11 @@ The **dispatch is the worker** (`src/worker.ts`); the **backends are providers**
 Every backend ships in one worker image,
 `public.ecr.aws/nullplatform/agent-plugins/services/parameters`: the providers' TypeScript, on
 bun and `@nullplatform/plugin`, compiled to one binary with every backend's client (the AWS SDK,
-the Azure SDK, Google's auth library; Vault over its HTTP API). `PARAMETERS_PROVIDER` in the
-worker's environment names the backend it serves, set on the agent's worker pin. A `parameters`
-notification channel, of type `package-exec`, makes the agent spawn that worker in its own pod
-and hand it every `parameter:<action>` of the parameters bound to that provider. No bash, no `jq`, no CLI: an action is a call to the backend's API.
+the Azure SDK, Google's auth library; Vault over its HTTP API). One worker serves every
+backend: each request names its provider in `provider.specification_slug`, and the worker opens
+that one. A `parameters` notification channel, of type `package-exec`, makes the agent spawn the
+worker in its own pod and hand it every `parameter:<action>` of the parameters bound to any of
+those providers. No bash, no `jq`, no CLI: an action is a call to the backend's API.
 
 The channel comes from the `parameter_storage_definition_agent_association` module in
 [tofu-modules](https://github.com/nullplatform/tofu-modules) with `worker_orchestrator = true`.
@@ -50,7 +51,7 @@ The channel comes from the `parameter_storage_definition_agent_association` modu
 ├── testing/                 # scope-testing framework (git submodule)
 ├── docs/                    # architecture, configuration, adding a provider
 ├── src/
-│   ├── main.ts              # the image's entry: the provider PARAMETERS_PROVIDER names
+│   ├── main.ts              # the image's entry: the worker with every provider
 │   ├── worker.ts            # the four routes: parameter:store / retrieve / delete / notify
 │   ├── context.ts           # the request a notification carries
 │   ├── naming.ts            # the canonical path every backend's name is built from
@@ -105,13 +106,12 @@ The Tofu and integration runners are wired through the `testing/` submodule
 
 `np package run` runs the worker on your machine the way production does: a local
 controlplane-agent that registers with the platform, spawns the worker image built from this
-repo, and hands it every action routed to it. `PROVIDER` names the backend the worker serves
-(`aws-secrets-manager` by default), passed to it as `PARAMETERS_PROVIDER`:
+repo, and hands it every action routed to it, whatever backend each one names:
 
 | Command | Runs | Does |
 |---|---|---|
 | `np package build --image` | `mise run build:image` | Builds `parameters:dev` |
-| `PROVIDER=hashicorp-vault np package run` | `mise run run` | Builds the image, then starts the local agent |
+| `np package run` | `mise run run` | Builds the image, then starts the local agent |
 
 Prerequisites: **Docker** with host networking (Linux as is; on Docker Desktop enable *host
 networking*), **[mise](https://mise.jdx.dev)** (`mise trust` once here), an **`NP_API_KEY`** for
@@ -120,7 +120,7 @@ the agent to register with, and `np` from the **alpha** channel, which carries `
 ```bash
 export NP_API_KEY=...
 eval "$(aws configure export-credentials --format env)"   # cloud credentials as variables
-PROVIDER=aws-secrets-manager np package run --log-level DEBUG   # Ctrl+C to stop
+np package run --log-level DEBUG   # Ctrl+C to stop
 ```
 
 The agent is tagged `package:parameters` and `local:<your user>`. It receives an
@@ -137,7 +137,6 @@ forward nothing.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PROVIDER` | `aws-secrets-manager` | The backend the worker serves (its `PARAMETERS_PROVIDER`) |
 | `NP_API_KEY` | required | The key the agent registers with (`--api-key` also sets it) |
 | `NP_LOG_LEVEL` | `INFO` | Agent log level (`--log-level` also sets it) |
 | `NP_PACKAGE_SLUG` | `parameters` | The slug in the `package:<slug>` tag, when published under another slug |

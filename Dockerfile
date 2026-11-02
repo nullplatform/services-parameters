@@ -2,9 +2,9 @@
 #
 # One worker image for every backend: the providers compiled to a single
 # binary on a lean runtime. The agent spawns it and dials it over gRPC on every
-# parameter:<action>; PARAMETERS_PROVIDER in the worker's environment names the
-# backend it serves: aws-secrets-manager, aws-parameter-store, azure-key-vault,
-# gcp-secret-manager or hashicorp-vault.
+# parameter:<action>, and each request names its backend in
+# provider.specification_slug: aws-secrets-manager, aws-parameter-store,
+# azure-key-vault, gcp-secret-manager or hashicorp-vault.
 #
 #   docker build -t parameters .
 

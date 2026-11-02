@@ -26,32 +26,43 @@ function echoProvider(slug: string, withNotify = false): { provider: Provider; s
 }
 
 describe("the worker", () => {
-  test("is the package the image names, with one route per action on the provider's channel", () => {
-    const plugin = parametersWorker(echoProvider("aws-secrets-manager").provider, { package: { name: "parameters-aws-secrets-manager", version: "1.0.0" }, sources: ["service"] });
-    expect(plugin.package).toMatchObject({ name: "parameters-aws-secrets-manager", version: "1.0.0" });
+  test("is the package the image names, with one route per action on a channel for every backend", () => {
+    const plugin = parametersWorker([echoProvider("aws-secrets-manager").provider, echoProvider("hashicorp-vault").provider], { package: { name: "parameters", version: "1.0.0" }, sources: ["service"] });
+    expect(plugin.package).toMatchObject({ name: "parameters", version: "1.0.0" });
     expect(plugin.manifest().runs.map((entry) => entry.name)).toEqual(["parameter:store", "parameter:retrieve", "parameter:delete", "parameter:notify"]);
     const channel = plugin.manifest().components.find((component) => component.resource_type === "notification_channel")!.resource as { source: string[]; filters: unknown };
     expect(channel.source).toEqual(["service"]);
     expect(JSON.stringify(channel.filters)).toContain('"provider.specification_slug":"aws-secrets-manager"');
+    expect(JSON.stringify(channel.filters)).toContain('"provider.specification_slug":"hashicorp-vault"');
   });
 
   test("answers each action with what the provider returns, and notify with the default ack when the provider has none", async () => {
     const { provider, seen } = echoProvider("aws-secrets-manager");
-    const plugin = parametersWorker(provider, { package: { name: "p", version: "0" }, sources: ["service"] });
+    const plugin = parametersWorker([provider], { package: { name: "p", version: "0" }, sources: ["service"] });
     expect((await run(plugin, storeSample.notification)).data).toEqual({ external_id: "DB_PASSWORD-42#1", metadata: {} });
     expect((await run(plugin, retrieveSample.notification)).data).toEqual({ value: "value of organization=acme-1255165411/account=prod-95118862/namespace=billing-37094320/application=api-321402625/environment=production/DB_PASSWORD-42 at a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d" });
     expect((await run(plugin, deleteSample.notification)).data).toEqual({ success: true });
     expect((await run(plugin, notifySample.notification)).data).toEqual({ success: true });
     expect(seen).toEqual(["open aws-secrets-manager", "open aws-secrets-manager", "open aws-secrets-manager", "open aws-secrets-manager"]);
     const notifying = echoProvider("aws-secrets-manager", true);
-    await run(parametersWorker(notifying.provider, { package: { name: "p", version: "0" }, sources: ["service"] }), notifySample.notification);
+    await run(parametersWorker([notifying.provider], { package: { name: "p", version: "0" }, sources: ["service"] }), notifySample.notification);
     expect(notifying.seen).toContain("notified");
   });
 
-  test("a parameter bound to another backend is refused by name", async () => {
-    const plugin = parametersWorker(echoProvider("hashicorp-vault").provider, { package: { name: "p", version: "0" }, sources: ["service"] });
+  test("each request reaches the backend it names, in one worker", async () => {
+    const secrets = echoProvider("aws-secrets-manager");
+    const vault = echoProvider("hashicorp-vault");
+    const plugin = parametersWorker([vault.provider, secrets.provider], { package: { name: "p", version: "0" }, sources: ["service"] });
+    await run(plugin, storeSample.notification);
+    await run(plugin, { ...storeSample.notification, provider: { ...storeSample.notification.provider, specification_slug: "hashicorp-vault" } });
+    expect(secrets.seen).toEqual(["open aws-secrets-manager"]);
+    expect(vault.seen).toEqual(["open hashicorp-vault"]);
+  });
+
+  test("a parameter bound to a backend the image does not carry is refused by name", async () => {
+    const plugin = parametersWorker([echoProvider("hashicorp-vault").provider], { package: { name: "p", version: "0" }, sources: ["service"] });
     const result = await run(plugin, storeSample.notification);
     expect(result.success).toBe(false);
-    expect(result.failure).toMatchObject({ code: "WRONG_PROVIDER", message: expect.stringContaining("bound to aws-secrets-manager") });
+    expect(result.failure).toMatchObject({ code: "UNKNOWN_PROVIDER", message: expect.stringContaining("bound to aws-secrets-manager") });
   });
 });

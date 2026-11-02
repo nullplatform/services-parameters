@@ -55,5 +55,5 @@ come from the environment only, never from the attributes.
    an existing secret, retrieve at a version and not found, delete and its idempotency.
 3. `parameters/providers/<slug>/specs/` (the install specs with the configuration template, slug =
    `<slug>`) and `docs/`.
-4. Nothing in CI: the one image carries every provider, and `PARAMETERS_PROVIDER=<slug>`
-   selects it.
+4. Nothing in CI: the one image carries every provider, and each request names
+   the one it goes to.

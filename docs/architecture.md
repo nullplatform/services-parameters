@@ -5,15 +5,15 @@ provider for each parameter (`provider.specification_slug` in the notification) 
 provider's configuration along (`provider.attributes`), so a worker needs no configuration of
 its own beyond the credentials in its environment.
 
-## One worker image, one backend per worker
+## One worker image, every backend in one worker
 
 Each backend is a provider under `src/providers/<slug>/`, and every provider ships in one image,
 `agent-plugins/services/parameters`: the providers' TypeScript compiled by bun into one binary.
-`PARAMETERS_PROVIDER` in the worker's environment names the backend it serves
-(`src/providers/index.ts`); the worker refuses to start without one it knows. The agent spawns
-the image named by the worker pin for the package `parameters`, with `PARAMETERS_PROVIDER` in the
-pin's `env`, and dials it over gRPC; the `parameters` channel routes it the `parameter:<action>`
-notifications of the parameters bound to that backend.
+One worker serves them all: each request names its backend in `provider.specification_slug`,
+and the worker opens that provider (`src/providers/index.ts`, `src/worker.ts`); a slug the image
+does not carry is refused with `UNKNOWN_PROVIDER`. The agent spawns the image named by the worker
+pin for the package `parameters` and dials it over gRPC; the `parameters` channel routes it the
+`parameter:<action>` notifications of the parameters bound to any of those backends.
 
 ```
 nullplatform ── parameter:<action> notification ──▶ agent ──▶ worker image of the provider
@@ -73,7 +73,7 @@ STS call an hour instead of one per action.
 
 ```
 src/
-├── main.ts              the image's entry: the provider PARAMETERS_PROVIDER names
+├── main.ts              the image's entry: the worker with every provider
 ├── worker.ts            the four routes and the dispatch
 ├── context.ts           ParameterRequest: what a notification carries
 ├── naming.ts            canonicalPath and the pieces each backend reshapes

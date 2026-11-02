@@ -41,7 +41,6 @@ namespace for every platform secret, so historical handles keep resolving.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PARAMETERS_PROVIDER` | required | the backend the worker serves: `aws-secrets-manager`, `aws-parameter-store`, `azure-key-vault`, `gcp-secret-manager` or `hashicorp-vault` |
 | `NP_PACKAGE_NAME` | `parameters` | the package the agent's worker pin names |
 | `NP_PACKAGE_VERSION` | `0.0.0` | the manifest's version |
 | `NP_AGENT_SOURCES` | `service` | the notification sources the manifest's channel subscribes to |
@@ -49,10 +48,12 @@ namespace for every platform secret, so historical handles keep resolving.
 ## Local development
 
 Run a provider's tests (`bun test`) against the fakes, or the worker itself against a real
-backend with the variables above in the environment: `PROVIDER=hashicorp-vault np package run`
+backend with the variables above in the environment: `np package run`
 (see the README), or one document through the SDK's exec protocol:
 
 ```bash
+# The backend is the one the document names in provider.specification_slug:
+# here hashicorp-vault, with the variables Vault's setup reads.
 VAULT_ADDR=http://localhost:8200 VAULT_USERNAME=np VAULT_PASSWORD=pw \
-PARAMETERS_PROVIDER=hashicorp-vault NP_ACTION_CONTEXT="$(cat src/samples/store.json)" bun src/main.ts
+NP_ACTION_CONTEXT="$(jq '.notification.provider.specification_slug = "hashicorp-vault"' src/samples/store.json)" bun src/main.ts
 ```
