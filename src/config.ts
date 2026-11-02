@@ -11,6 +11,6 @@ const list = (value: string | undefined): string[] => (value ?? "").split(",").m
 export function workerConfigOf(env: Record<string, string | undefined> = process.env): WorkerConfig {
   return {
     package: { name: env.NP_PACKAGE_NAME || "parameters", version: env.NP_PACKAGE_VERSION || "0.0.0" },
-    sources: env.NP_AGENT_SOURCES ? list(env.NP_AGENT_SOURCES) : ["service"],
+    sources: env.NP_AGENT_SOURCES ? list(env.NP_AGENT_SOURCES) : ["parameters"],
   };
 }

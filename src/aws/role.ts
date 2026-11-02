@@ -11,6 +11,7 @@ import type { AwsCredentialIdentity } from "@aws-sdk/types";
 import type { Context, Logger } from "@nullplatform/plugin";
 import { nrnOf, type ParameterRequest } from "../context";
 import { Failure, messageOf } from "../failure";
+import { providerOf } from "../platform/providers";
 
 /** A client the SDK's commands are sent through; a test fakes it. */
 export interface Sender {
@@ -45,14 +46,11 @@ export function resolveRoleArn(input: { override?: string; attributes: Record<st
   return input.override || arnForSelector(input.attributes, input.selector) || input.fallback || "";
 }
 
-/** The IAM provider's attributes at the request's NRN and dimensions, as the platform resolves them; {} when the lookup fails. */
+/** The IAM provider's attributes over the request's NRN and dimensions, as the platform resolves them; {} when there is none or the lookup fails. */
 export async function iamAttributesOf(context: Context, request: ParameterRequest): Promise<Record<string, unknown>> {
-  const nrn = nrnOf(request);
-  const dimensions = Object.entries(request.valueDimensions).map(([key, value]) => `${key}:${value}`).join(",");
   try {
-    const pages = context.api.provider.list({ categories: "identity-access-control", nrn, ...(dimensions ? { dimensions } : {}) });
-    const first = (await pages[Symbol.asyncIterator]().next()).value as { results?: Array<{ attributes?: Record<string, unknown> }> } | undefined;
-    return first?.results?.[0]?.attributes ?? {};
+    const provider = await providerOf(context.api, "identity-access-control", nrnOf(request), request.valueDimensions);
+    return provider?.attributes ?? {};
   } catch (error) {
     context.log.warn(`IAM provider lookup failed: ${messageOf(error)}`);
     return {};

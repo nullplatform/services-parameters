@@ -14,12 +14,29 @@ export function payloadFor(slug: string, extra: Record<string, unknown> = {}): P
 
 export const requestFor = (slug: string, extra: Record<string, unknown> = {}): ParameterRequest => requestOf(payloadFor(slug, extra));
 
-/** A context whose log is kept and whose platform answers no provider. */
-export function fakeContext(providers: unknown[] = []): { context: Context; lines: string[] } {
+/** The platform's providers API, faked: one category and one specification, `providers` the rows over any NRN, each read whole by its id. */
+export function fakeApi(providers: Array<Record<string, unknown>>): { api: unknown; calls: string[] } {
+  const calls: string[] = [];
+  const rows: Array<Record<string, unknown>> = providers.map((provider, index) => ({ id: `p${index + 1}`, nrn: "organization=1:account=2", specification_id: "s1", dimensions: {}, ...provider }));
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  const listing = (results: unknown[]) => ({ results });
+  const provider = Object.assign((id: string) => ({ get: async () => { calls.push(`GET /provider/${id}`); return byId.get(id); } }), {
+    get: async (query: Record<string, unknown>) => { calls.push(`GET /provider ${JSON.stringify(query)}`); return listing(rows.map(({ attributes, ...row }) => row)); },
+  });
+  const api = {
+    category: { get: async (query: Record<string, unknown>) => { calls.push(`GET /category ${JSON.stringify(query)}`); return listing(providers.length === 0 ? [] : [{ id: "c1", slug: query.slug }]); } },
+    provider_specification: { get: async (query: Record<string, unknown>) => { calls.push(`GET /provider_specification ${JSON.stringify(query)}`); return listing([{ id: "s1", slug: "aws-iam-configuration" }]); } },
+    provider,
+  };
+  return { api, calls };
+}
+
+/** A context whose log is kept and whose platform answers `providers` (none unless given). */
+export function fakeContext(providers: Array<Record<string, unknown>> = []): { context: Context; lines: string[]; calls: string[] } {
   const lines: string[] = [];
   const log = { debug: (line: string) => lines.push(`debug ${line}`), info: (line: string) => lines.push(`info ${line}`), warn: (line: string) => lines.push(`warn ${line}`), error: (line: string) => lines.push(`error ${line}`) };
-  const api = { provider: { list: () => ({ [Symbol.asyncIterator]: async function* () { yield { results: providers }; } }) } };
-  return { context: { log, api, signal: undefined } as unknown as Context, lines };
+  const { api, calls } = fakeApi(providers);
+  return { context: { log, api, signal: undefined } as unknown as Context, lines, calls };
 }
 
 export interface Sent {

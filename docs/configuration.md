@@ -43,7 +43,7 @@ namespace for every platform secret, so historical handles keep resolving.
 |---|---|---|
 | `NP_PACKAGE_NAME` | `parameters` | the package the agent's worker pin names |
 | `NP_PACKAGE_VERSION` | `0.0.0` | the manifest's version |
-| `NP_AGENT_SOURCES` | `service` | the notification sources the manifest's channel subscribes to |
+| `NP_AGENT_SOURCES` | `parameters` | the notification sources the manifest's channel subscribes to |
 
 ## Local development
 
