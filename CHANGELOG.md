@@ -5,6 +5,14 @@ point. Everything below is the history of
 [nullplatform/parameters-provider](https://github.com/nullplatform/parameters-provider),
 where this package lived until it moved here to ship as a worker image.
 
+## [1.0.1](https://github.com/nullplatform/services-parameters/compare/v1.0.0...v1.0.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** bump actions/checkout from 4 to 7 ([36a971f](https://github.com/nullplatform/services-parameters/commit/36a971fa17f9cd330d73c97db9e88ba0bd9d7c84))
+* **deps:** bump actions/checkout from 4 to 7 ([8a49eb7](https://github.com/nullplatform/services-parameters/commit/8a49eb7808160bf74e26dde6260f8e3282aeea8f))
+
 ## 1.0.0 (2026-10-30)
 
 
