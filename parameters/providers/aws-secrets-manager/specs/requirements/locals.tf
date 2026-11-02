@@ -20,6 +20,7 @@ locals {
       "secretsmanager:CreateSecret",
       "secretsmanager:PutSecretValue",
       "secretsmanager:GetSecretValue",
+      "secretsmanager:BatchGetSecretValue",
       "secretsmanager:DeleteSecret",
     ]
     Resource = "arn:aws:secretsmanager:${local.aws_region}:${local.aws_account_id}:secret:nullplatform/*"

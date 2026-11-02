@@ -19,6 +19,7 @@ locals {
     Action = [
       "ssm:PutParameter",
       "ssm:GetParameter",
+      "ssm:GetParameters",
       "ssm:DeleteParameter",
     ]
     Resource = "arn:aws:ssm:${local.aws_region}:${local.aws_account_id}:parameter/nullplatform/*"
