@@ -37,12 +37,18 @@ export interface AwsAccess {
 
 /** The ARN the IAM provider's attributes name for `selector`; "" when none. */
 export function arnForSelector(attributes: Record<string, unknown>, selector: string): string {
-  const roles = (attributes.iam_role_arns as { arns?: Array<{ selector?: string; arn?: string }> } | undefined)?.arns ?? [];
+  const roles =
+    (attributes.iam_role_arns as { arns?: Array<{ selector?: string; arn?: string }> } | undefined)?.arns ?? [];
   return roles.find((role) => role.selector === selector)?.arn ?? "";
 }
 
 /** The ARN to assume, "" to run as the agent: the override, else the provider's, else the default. */
-export function resolveRoleArn(input: { override?: string; attributes: Record<string, unknown>; selector: string; fallback?: string }): string {
+export function resolveRoleArn(input: {
+  override?: string;
+  attributes: Record<string, unknown>;
+  selector: string;
+  fallback?: string;
+}): string {
   return input.override || arnForSelector(input.attributes, input.selector) || input.fallback || "";
 }
 
@@ -82,13 +88,23 @@ export class AssumedRoles {
       return known.credentials;
     }
     log.info(`Assuming role ${arn}`);
-    let answer: { Credentials?: { AccessKeyId?: string; SecretAccessKey?: string; SessionToken?: string; Expiration?: Date | string } };
+    let answer: {
+      Credentials?: {
+        AccessKeyId?: string;
+        SecretAccessKey?: string;
+        SessionToken?: string;
+        Expiration?: Date | string;
+      };
+    };
     try {
       answer = await this.sts(region).send(new this.assumeRole({ RoleArn: arn, RoleSessionName: sessionName }));
     } catch (error) {
       throw new Failure("ASSUME_ROLE_FAILED", {
         what: `sts:AssumeRole failed for ${arn}`,
-        causes: ["The agent's role is not allowed to sts:AssumeRole the target role", "The target role does not exist or does not trust the agent role"],
+        causes: [
+          "The agent's role is not allowed to sts:AssumeRole the target role",
+          "The target role does not exist or does not trust the agent role",
+        ],
         underlying: messageOf(error),
       });
     }
@@ -97,8 +113,13 @@ export class AssumedRoles {
       throw new Failure("ASSUME_ROLE_FAILED", { what: `sts:AssumeRole returned incomplete credentials for ${arn}` });
     }
     const expiration = got.Expiration ? new Date(got.Expiration).getTime() : Number.NaN;
-    const expiresAt = Number.isFinite(expiration) && expiration > this.now() ? expiration : this.now() + DEFAULT_LIFETIME_MS;
-    const credentials = { accessKeyId: got.AccessKeyId, secretAccessKey: got.SecretAccessKey, sessionToken: got.SessionToken };
+    const expiresAt =
+      Number.isFinite(expiration) && expiration > this.now() ? expiration : this.now() + DEFAULT_LIFETIME_MS;
+    const credentials = {
+      accessKeyId: got.AccessKeyId,
+      secretAccessKey: got.SecretAccessKey,
+      sessionToken: got.SessionToken,
+    };
     this.held.set(arn, { credentials, expiresAt });
     log.info("Role assumed");
     return credentials;

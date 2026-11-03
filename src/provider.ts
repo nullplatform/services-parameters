@@ -46,16 +46,23 @@ export interface Provider {
 export const DONE: Done = { success: true };
 
 /** `items` in groups of `size`, in order. */
-export const chunks = <Item>(items: Item[], size: number): Item[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
+export const chunks = <Item>(items: Item[], size: number): Item[][] =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
 /** How many single reads a batch runs at once in a backend without a batch read. */
 export const BATCH_CONCURRENCY = 10;
 
 /** The handle a request carries, as the platform spelled it. */
-const handleOfRequest = (request: ParameterRequest): string => (request.externalId.version ? `${request.externalId.path}#${request.externalId.version}` : request.externalId.path);
+const handleOfRequest = (request: ParameterRequest): string =>
+  request.externalId.version ? `${request.externalId.path}#${request.externalId.version}` : request.externalId.path;
 
 /** The values of `requests` read one by one through `session.retrieve`, `limit` at a time; one that fails is logged and left out, and the platform retrieves it on its own. */
-export async function retrieveEach(session: Pick<Session, "retrieve">, requests: ParameterRequest[], log: Logger, limit = BATCH_CONCURRENCY): Promise<RetrievedBatch> {
+export async function retrieveEach(
+  session: Pick<Session, "retrieve">,
+  requests: ParameterRequest[],
+  log: Logger,
+  limit = BATCH_CONCURRENCY,
+): Promise<RetrievedBatch> {
   const values: RetrievedBatch["values"] = [];
   const pending = [...requests];
   const read = async (): Promise<void> => {
@@ -63,7 +70,9 @@ export async function retrieveEach(session: Pick<Session, "retrieve">, requests:
       try {
         values.push({ external_id: handleOfRequest(request), value: (await session.retrieve(request)).value });
       } catch (error) {
-        log.warn(`'${request.externalId.path}' left out of the batch: ${error instanceof Error ? error.message : String(error)}`);
+        log.warn(
+          `'${request.externalId.path}' left out of the batch: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   };

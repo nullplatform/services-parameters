@@ -1,0 +1,6 @@
+# Only the worker is formatted: the bash package, the install specs and the generated files are not.
+parameters
+testing
+node_modules
+bun.lock
+CHANGELOG.md

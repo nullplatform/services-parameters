@@ -21,7 +21,11 @@ export const NAME_MAX_LENGTH = 127;
 
 /** What the provider needs of a Key Vault client; the SDK's `SecretClient` is one. */
 export interface SecretsLike {
-  setSecret(name: string, value: string, options: { tags: Record<string, string> }): Promise<{ properties: { id?: string; version?: string } }>;
+  setSecret(
+    name: string,
+    value: string,
+    options: { tags: Record<string, string> },
+  ): Promise<{ properties: { id?: string; version?: string } }>;
   getSecret(name: string, options?: { version?: string }): Promise<{ value?: string }>;
   beginDeleteSecret(name: string): Promise<{ pollUntilDone(): Promise<unknown> }>;
   purgeDeletedSecret(name: string): Promise<void>;
@@ -41,12 +45,17 @@ const sanitize = (value: string): string => value.replace(/[^A-Za-z0-9-]/g, "-")
 
 /** The secret's name: the application, the scope when the value is scoped, the dimensions as `key-value`, then `<name>-<id>`, dash-joined. */
 export function secretNameOf(request: ParameterRequest): string {
-  const entities = ["application", "scope"].filter((entity) => request.entities[entity]).map((entity) => `${entity}-${sanitize(request.entities[entity])}`);
+  const entities = ["application", "scope"]
+    .filter((entity) => request.entities[entity])
+    .map((entity) => `${entity}-${sanitize(request.entities[entity])}`);
   const dimensions = dimensionSegments(request.dimensions).map((segment) => sanitize(segment.replace("=", "-")));
   return [...entities, ...dimensions, ...parameterSegment(request, sanitize)].join("-");
 }
 
-const statusOf = (error: unknown): number | undefined => (error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode: unknown }).statusCode) : undefined);
+const statusOf = (error: unknown): number | undefined =>
+  error && typeof error === "object" && "statusCode" in error
+    ? Number((error as { statusCode: unknown }).statusCode)
+    : undefined;
 
 class KeyVaultSession implements Session {
   constructor(
@@ -59,16 +68,34 @@ class KeyVaultSession implements Session {
   async store(request: ParameterRequest) {
     const name = secretNameOf(request);
     if (name.length > NAME_MAX_LENGTH) {
-      throw new Failure("NAME_TOO_LONG", { what: `Secret name exceeds Azure Key Vault's ${NAME_MAX_LENGTH}-character limit (got ${name.length})`, causes: [`The name is the entity path (NRN ids + dimensions + parameter): ${name}`], fixes: ["Shorten the parameter name, or reduce the number of dimensions", "Deeply-nested scopes with many/long dimensions can exceed the limit"] });
+      throw new Failure("NAME_TOO_LONG", {
+        what: `Secret name exceeds Azure Key Vault's ${NAME_MAX_LENGTH}-character limit (got ${name.length})`,
+        causes: [`The name is the entity path (NRN ids + dimensions + parameter): ${name}`],
+        fixes: [
+          "Shorten the parameter name, or reduce the number of dimensions",
+          "Deeply-nested scopes with many/long dimensions can exceed the limit",
+        ],
+      });
     }
     let stored: { properties: { id?: string; version?: string } };
     try {
       stored = await this.secrets.setSecret(name, request.value, { tags: { managed_by: "nullplatform" } });
     } catch (error) {
-      throw new Failure("STORE_FAILED", { what: `Failed to store secret in Azure Key Vault '${this.vaultName}'`, causes: [`The service principal lacks Set permission on ${this.vaultName}`, "The vault firewall blocks the caller, or the token expired"], fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"], underlying: messageOf(error) });
+      throw new Failure("STORE_FAILED", {
+        what: `Failed to store secret in Azure Key Vault '${this.vaultName}'`,
+        causes: [
+          `The service principal lacks Set permission on ${this.vaultName}`,
+          "The vault firewall blocks the caller, or the token expired",
+        ],
+        fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"],
+        underlying: messageOf(error),
+      });
     }
     const version = stored.properties.version ?? (stored.properties.id ?? "").split("/").pop() ?? "";
-    return { external_id: handleOf(name, version), metadata: { azure_secret_id: stored.properties.id ?? "", secret_name: name, vault_name: this.vaultName } };
+    return {
+      external_id: handleOf(name, version),
+      metadata: { azure_secret_id: stored.properties.id ?? "", secret_name: name, vault_name: this.vaultName },
+    };
   }
 
   async retrieve(request: ParameterRequest) {
@@ -79,9 +106,28 @@ class KeyVaultSession implements Session {
       return { value: secret.value ?? "" };
     } catch (error) {
       if (statusOf(error) === 404) {
-        throw new Failure("NOT_FOUND", { what: `Secret '${name}' not found in Azure Key Vault '${this.vaultName}'`, causes: ["The secret was manually deleted (and possibly purged) from AKV", "The external_id is stale", ...(version ? [`Requested version '${version}' was purged from AKV`] : [])], fixes: [`Verify: GET ${this.vaultUrl}/secrets/${name}?api-version=7.4`, "If genuinely missing, the parameter value needs to be re-stored"] });
+        throw new Failure("NOT_FOUND", {
+          what: `Secret '${name}' not found in Azure Key Vault '${this.vaultName}'`,
+          causes: [
+            "The secret was manually deleted (and possibly purged) from AKV",
+            "The external_id is stale",
+            ...(version ? [`Requested version '${version}' was purged from AKV`] : []),
+          ],
+          fixes: [
+            `Verify: GET ${this.vaultUrl}/secrets/${name}?api-version=7.4`,
+            "If genuinely missing, the parameter value needs to be re-stored",
+          ],
+        });
       }
-      throw new Failure("RETRIEVE_FAILED", { what: `Failed to retrieve secret '${name}' from Azure Key Vault '${this.vaultName}'`, causes: [`The service principal lacks Get permission on vault ${this.vaultName}`, "The vault firewall blocks the caller, or the token expired"], fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"], underlying: messageOf(error) });
+      throw new Failure("RETRIEVE_FAILED", {
+        what: `Failed to retrieve secret '${name}' from Azure Key Vault '${this.vaultName}'`,
+        causes: [
+          `The service principal lacks Get permission on vault ${this.vaultName}`,
+          "The vault firewall blocks the caller, or the token expired",
+        ],
+        fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"],
+        underlying: messageOf(error),
+      });
     }
   }
 
@@ -100,7 +146,15 @@ class KeyVaultSession implements Session {
         this.context.log.debug(`Secret '${name}' does not exist, treating delete as success`);
         return DONE;
       }
-      throw new Failure("DELETE_FAILED", { what: `Failed to delete secret '${name}' from Azure Key Vault '${this.vaultName}'`, causes: [`The service principal lacks Delete permission on vault ${this.vaultName}`, "The vault firewall blocks the caller, or the token expired"], fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"], underlying: messageOf(error) });
+      throw new Failure("DELETE_FAILED", {
+        what: `Failed to delete secret '${name}' from Azure Key Vault '${this.vaultName}'`,
+        causes: [
+          `The service principal lacks Delete permission on vault ${this.vaultName}`,
+          "The vault firewall blocks the caller, or the token expired",
+        ],
+        fixes: ["Confirm the SP has the Key Vault Secrets Officer role on the vault"],
+        underlying: messageOf(error),
+      });
     }
     await this.purge(name);
     return DONE;
@@ -116,7 +170,9 @@ class KeyVaultSession implements Session {
         return;
       }
       if (status === 409) {
-        this.context.log.debug(`Purge protection enabled on '${this.vaultName}'; secret remains in the soft-delete window until retention expiry`);
+        this.context.log.debug(
+          `Purge protection enabled on '${this.vaultName}'; secret remains in the soft-delete window until retention expiry`,
+        );
         return;
       }
       if (status === 403) {
@@ -129,22 +185,44 @@ class KeyVaultSession implements Session {
 }
 
 export function azureKeyVault(options: KeyVaultOptions = {}): Provider {
-  const clients = options.clients ?? { credential: (tenantId, clientId, clientSecret) => new ClientSecretCredential(tenantId, clientId, clientSecret), secrets: (vaultUrl, credential) => new SecretClient(vaultUrl, credential) };
+  const clients = options.clients ?? {
+    credential: (tenantId, clientId, clientSecret) => new ClientSecretCredential(tenantId, clientId, clientSecret),
+    secrets: (vaultUrl, credential) => new SecretClient(vaultUrl, credential),
+  };
   const env = options.env ?? process.env;
   return {
     slug: SLUG,
     async open(request, context) {
-      const vaultName = settingOf(request.provider.attributes, env, { attribute: "setup.vault_name", variable: "AZURE_KEY_VAULT_NAME" });
+      const vaultName = settingOf(request.provider.attributes, env, {
+        attribute: "setup.vault_name",
+        variable: "AZURE_KEY_VAULT_NAME",
+      });
       if (vaultName === "") {
-        throw new Failure("MISSING_VAULT", { what: "Azure Key Vault name not configured", causes: ["AZURE_KEY_VAULT_NAME env var is not set", ".vault_name is missing in the azure-key-vault provider config"], fixes: ["Set AZURE_KEY_VAULT_NAME=<your-vault-name>", "Or set .vault_name in the provider config attributes"] });
+        throw new Failure("MISSING_VAULT", {
+          what: "Azure Key Vault name not configured",
+          causes: [
+            "AZURE_KEY_VAULT_NAME env var is not set",
+            ".vault_name is missing in the azure-key-vault provider config",
+          ],
+          fixes: ["Set AZURE_KEY_VAULT_NAME=<your-vault-name>", "Or set .vault_name in the provider config attributes"],
+        });
       }
       // The service principal's credentials are sensitive: the environment only, never the provider's attributes.
       const { AZURE_CLIENT_ID: clientId, AZURE_CLIENT_SECRET: clientSecret, AZURE_TENANT_ID: tenantId } = env;
       if (!clientId || !clientSecret || !tenantId) {
-        throw new Failure("MISSING_CREDENTIALS", { what: "Azure service principal credentials not configured", causes: ["AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID are not all set in the agent runtime"], fixes: ["Set all three env vars (the client secret is sensitive: env only, never provider config)"] });
+        throw new Failure("MISSING_CREDENTIALS", {
+          what: "Azure service principal credentials not configured",
+          causes: ["AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID are not all set in the agent runtime"],
+          fixes: ["Set all three env vars (the client secret is sensitive: env only, never provider config)"],
+        });
       }
       const vaultUrl = `https://${vaultName}.vault.azure.net`;
-      return new KeyVaultSession(clients.secrets(vaultUrl, clients.credential(tenantId, clientId, clientSecret)), vaultName, vaultUrl, context);
+      return new KeyVaultSession(
+        clients.secrets(vaultUrl, clients.credential(tenantId, clientId, clientSecret)),
+        vaultName,
+        vaultUrl,
+        context,
+      );
     },
   };
 }

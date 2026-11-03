@@ -6,7 +6,14 @@
  * returns; retrieve reads `<name>:<version>`, delete removes every version.
  */
 
-import { DeleteParameterCommand, GetParameterCommand, GetParametersCommand, PutParameterCommand, SSMClient, type ParameterTier } from "@aws-sdk/client-ssm";
+import {
+  DeleteParameterCommand,
+  GetParameterCommand,
+  GetParametersCommand,
+  PutParameterCommand,
+  SSMClient,
+  type ParameterTier,
+} from "@aws-sdk/client-ssm";
 import type { Context } from "@nullplatform/plugin";
 import { assumedRolesOf, clientOptions, realAwsClients, type AwsClients } from "../../aws/clients";
 import { awsAccess, type AwsAccess, type RoleSelection, type Sender } from "../../aws/role";
@@ -22,7 +29,12 @@ export const TIERS: readonly ParameterTier[] = ["Standard", "Advanced", "Intelli
 
 const isTier = (value: string): value is ParameterTier => (TIERS as readonly string[]).includes(value);
 
-const ROLE: RoleSelection = { selector: "parameter_store", overrideVariable: "PARAMETER_STORE_ASSUME_ROLE_ARN", defaultVariable: "PARAMETER_STORE_ASSUME_ROLE_ARN_DEFAULT", sessionPrefix: "np-parameter-store" };
+const ROLE: RoleSelection = {
+  selector: "parameter_store",
+  overrideVariable: "PARAMETER_STORE_ASSUME_ROLE_ARN",
+  defaultVariable: "PARAMETER_STORE_ASSUME_ROLE_ARN_DEFAULT",
+  sessionPrefix: "np-parameter-store",
+};
 
 export interface ParameterStoreClients extends AwsClients {
   ssm: (access: AwsAccess) => Sender;
@@ -61,11 +73,35 @@ class ParameterStoreSession implements Session {
     const type = request.kind === "secret" ? "SecureString" : "String";
     let result: { Version?: number };
     try {
-      result = await this.ssm.send(new PutParameterCommand({ Name: name, Value: request.value, Type: type, Tier: this.tier, Overwrite: true, ...(type === "SecureString" && this.kmsKeyId ? { KeyId: this.kmsKeyId } : {}) }));
+      result = await this.ssm.send(
+        new PutParameterCommand({
+          Name: name,
+          Value: request.value,
+          Type: type,
+          Tier: this.tier,
+          Overwrite: true,
+          ...(type === "SecureString" && this.kmsKeyId ? { KeyId: this.kmsKeyId } : {}),
+        }),
+      );
     } catch (error) {
-      throw new Failure("STORE_FAILED", { what: "Failed to store parameter in AWS Parameter Store", causes: [`IAM principal lacks ssm:PutParameter for ${name}`, `Tier '${this.tier}' rejects this value size (Standard caps at 4KB)`, ...(type === "SecureString" && this.kmsKeyId ? [`IAM principal lacks kms:Encrypt on ${this.kmsKeyId}`] : [])], fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`, "For large values, set the tier to Advanced"], underlying: messageOf(error) });
+      throw new Failure("STORE_FAILED", {
+        what: "Failed to store parameter in AWS Parameter Store",
+        causes: [
+          `IAM principal lacks ssm:PutParameter for ${name}`,
+          `Tier '${this.tier}' rejects this value size (Standard caps at 4KB)`,
+          ...(type === "SecureString" && this.kmsKeyId ? [`IAM principal lacks kms:Encrypt on ${this.kmsKeyId}`] : []),
+        ],
+        fixes: [
+          `Verify identity: aws sts get-caller-identity --region ${this.region}`,
+          "For large values, set the tier to Advanced",
+        ],
+        underlying: messageOf(error),
+      });
     }
-    return { external_id: handleOf(path, result.Version === undefined ? "" : String(result.Version)), metadata: { parameter_name: name, region: this.region, type, tier: this.tier } };
+    return {
+      external_id: handleOf(path, result.Version === undefined ? "" : String(result.Version)),
+      metadata: { parameter_name: name, region: this.region, type, tier: this.tier },
+    };
   }
 
   async retrieve(request: ParameterRequest) {
@@ -73,12 +109,34 @@ class ParameterStoreSession implements Session {
     const version = request.externalId.version;
     let answer: { Parameter?: { Value?: string } };
     try {
-      answer = await this.ssm.send(new GetParameterCommand({ Name: version ? `${name}:${version}` : name, WithDecryption: true }));
+      answer = await this.ssm.send(
+        new GetParameterCommand({ Name: version ? `${name}:${version}` : name, WithDecryption: true }),
+      );
     } catch (error) {
       if (errorName(error) === "ParameterNotFound" || errorName(error) === "ParameterVersionNotFound") {
-        throw new Failure("NOT_FOUND", { what: `Parameter '${name}' not found in AWS Parameter Store`, causes: ["The parameter was manually deleted from AWS SSM", "The external_id is stale", ...(version ? [`Requested version '${version}' is outside Parameter Store's retention window`] : [])], fixes: [`Verify: aws ssm describe-parameters --filters Key=Name,Values=${name} --region ${this.region}`, "If genuinely missing, the parameter value needs to be re-stored"] });
+        throw new Failure("NOT_FOUND", {
+          what: `Parameter '${name}' not found in AWS Parameter Store`,
+          causes: [
+            "The parameter was manually deleted from AWS SSM",
+            "The external_id is stale",
+            ...(version ? [`Requested version '${version}' is outside Parameter Store's retention window`] : []),
+          ],
+          fixes: [
+            `Verify: aws ssm describe-parameters --filters Key=Name,Values=${name} --region ${this.region}`,
+            "If genuinely missing, the parameter value needs to be re-stored",
+          ],
+        });
       }
-      throw new Failure("RETRIEVE_FAILED", { what: `Failed to retrieve parameter '${name}' from AWS Parameter Store`, causes: ["IAM principal lacks ssm:GetParameter on this resource", "KMS key permission missing (kms:Decrypt) for SecureString", `Region '${this.region}' unreachable`], fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`], underlying: messageOf(error) });
+      throw new Failure("RETRIEVE_FAILED", {
+        what: `Failed to retrieve parameter '${name}' from AWS Parameter Store`,
+        causes: [
+          "IAM principal lacks ssm:GetParameter on this resource",
+          "KMS key permission missing (kms:Decrypt) for SecureString",
+          `Region '${this.region}' unreachable`,
+        ],
+        fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`],
+        underlying: messageOf(error),
+      });
     }
     return { value: answer.Parameter?.Value ?? "" };
   }
@@ -86,16 +144,23 @@ class ParameterStoreSession implements Session {
   /** A batch reads up to BATCH_SIZE parameters per GetParameters, each at the version its handle names; one the call could not read, or answered at another version, is read alone, and one that still fails is left out. */
   async retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
     const byName = new Map(requests.map((request) => [parameterNameOf(request.externalId.path), request]));
-    const selectorOf = (request: ParameterRequest): string => (request.externalId.version ? `${parameterNameOf(request.externalId.path)}:${request.externalId.version}` : parameterNameOf(request.externalId.path));
+    const selectorOf = (request: ParameterRequest): string =>
+      request.externalId.version
+        ? `${parameterNameOf(request.externalId.path)}:${request.externalId.version}`
+        : parameterNameOf(request.externalId.path);
     const values: RetrievedBatch["values"] = [];
     const alone: ParameterRequest[] = [];
     await Promise.all(
       chunks([...byName.values()], BATCH_SIZE).map(async (group) => {
         let answer: BatchAnswer;
         try {
-          answer = await this.ssm.send(new GetParametersCommand({ Names: group.map(selectorOf), WithDecryption: true }));
+          answer = await this.ssm.send(
+            new GetParametersCommand({ Names: group.map(selectorOf), WithDecryption: true }),
+          );
         } catch (error) {
-          this.context.log.warn(`batch read of ${group.length} parameters failed, reading them one by one: ${messageOf(error)}`);
+          this.context.log.warn(
+            `batch read of ${group.length} parameters failed, reading them one by one: ${messageOf(error)}`,
+          );
           alone.push(...group);
           return;
         }
@@ -110,7 +175,10 @@ class ParameterStoreSession implements Session {
             alone.push(request);
             continue;
           }
-          values.push({ external_id: handleOf(request.externalId.path, request.externalId.version), value: parameter.Value ?? "" });
+          values.push({
+            external_id: handleOf(request.externalId.path, request.externalId.version),
+            value: parameter.Value ?? "",
+          });
         }
         alone.push(...group.filter((request) => !read.has(parameterNameOf(request.externalId.path))));
       }),
@@ -125,7 +193,15 @@ class ParameterStoreSession implements Session {
       await this.ssm.send(new DeleteParameterCommand({ Name: name }));
     } catch (error) {
       if (errorName(error) !== "ParameterNotFound") {
-        throw new Failure("DELETE_FAILED", { what: `Failed to delete parameter '${name}' in AWS Parameter Store`, causes: ["IAM principal lacks ssm:DeleteParameter on this resource", `Region '${this.region}' unreachable or wrong`], fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`], underlying: messageOf(error) });
+        throw new Failure("DELETE_FAILED", {
+          what: `Failed to delete parameter '${name}' in AWS Parameter Store`,
+          causes: [
+            "IAM principal lacks ssm:DeleteParameter on this resource",
+            `Region '${this.region}' unreachable or wrong`,
+          ],
+          fixes: [`Verify identity: aws sts get-caller-identity --region ${this.region}`],
+          underlying: messageOf(error),
+        });
       }
       this.context.log.debug(`Parameter '${name}' does not exist, treating delete as success`);
     }
@@ -144,7 +220,10 @@ export function awsParameterStore(options: ParameterStoreOptions = {}): Provider
       const kmsKeyId = settingOf(request.provider.attributes, env, { attribute: "setup.kms_key_id" });
       const tier = settingOf(request.provider.attributes, env, { attribute: "setup.tier", fallback: "Standard" });
       if (!isTier(tier)) {
-        throw new Failure("INVALID_TIER", { what: `Invalid tier '${tier}'`, fixes: [`Set the tier to one of: ${TIERS.join(", ")}`] });
+        throw new Failure("INVALID_TIER", {
+          what: `Invalid tier '${tier}'`,
+          fixes: [`Set the tier to one of: ${TIERS.join(", ")}`],
+        });
       }
       return new ParameterStoreSession(clients.ssm(access), access.region, kmsKeyId, tier, context);
     },

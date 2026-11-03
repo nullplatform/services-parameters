@@ -97,7 +97,13 @@ export function forgetProviders(): void {
 }
 
 /** The provider of `category` over `nrn` for a request of `dimensions`, whole; undefined when none is configured. Resolved once per REMEMBER_MS; a failed resolution is not kept. */
-export function providerOf(api: Api, category: string, nrn: string, dimensions: Record<string, string>, now: () => number = Date.now): Promise<Provider | undefined> {
+export function providerOf(
+  api: Api,
+  category: string,
+  nrn: string,
+  dimensions: Record<string, string>,
+  now: () => number = Date.now,
+): Promise<Provider | undefined> {
   const key = `${category}|${nrn}|${dimensionsQuery(dimensions)}`;
   const kept = remembered.get(key);
   if (kept && now() - kept.at < REMEMBER_MS) {
@@ -109,12 +115,23 @@ export function providerOf(api: Api, category: string, nrn: string, dimensions: 
   return provider;
 }
 
-async function resolveProvider(api: Api, category: string, nrn: string, dimensions: Record<string, string>): Promise<Provider | undefined> {
+async function resolveProvider(
+  api: Api,
+  category: string,
+  nrn: string,
+  dimensions: Record<string, string>,
+): Promise<Provider | undefined> {
   const categories = (await api.category.get<Listing<Category>>({ slug: category })).results ?? [];
   if (categories.length === 0) {
     return undefined;
   }
-  const specifications = (await api.provider_specification.get<Listing<Specification>>({ category: categories.map((found) => found.id).join(","), nrn })).results ?? [];
+  const specifications =
+    (
+      await api.provider_specification.get<Listing<Specification>>({
+        category: categories.map((found) => found.id).join(","),
+        nrn,
+      })
+    ).results ?? [];
   if (specifications.length === 0) {
     return undefined;
   }

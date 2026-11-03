@@ -16,10 +16,16 @@ export const ENTITY_ORDER = ["organization", "account", "namespace", "applicatio
 export const sanitizeForPath = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "_");
 
 /** The dimensions as `key=value` segments, sorted by key. */
-export const dimensionSegments = (dimensions: Record<string, string>): string[] => Object.keys(dimensions).sort().map((key) => `${key}=${dimensions[key]}`);
+export const dimensionSegments = (dimensions: Record<string, string>): string[] =>
+  Object.keys(dimensions)
+    .sort()
+    .map((key) => `${key}=${dimensions[key]}`);
 
 /** The parameter's own segment: `<name>-<id>`, the id alone when it has no name, nothing when it has no id. */
-export function parameterSegment(request: ParameterRequest, sanitize: (value: string) => string = sanitizeForPath): string[] {
+export function parameterSegment(
+  request: ParameterRequest,
+  sanitize: (value: string) => string = sanitizeForPath,
+): string[] {
   if (request.name && request.parameterId) {
     return [`${sanitize(request.name)}-${request.parameterId}`];
   }
@@ -28,6 +34,8 @@ export function parameterSegment(request: ParameterRequest, sanitize: (value: st
 
 /** `organization=<slug>-<id>/account=…/application=…[/scope=…][/<dim>=<value>…]/<name>-<id>`. */
 export function canonicalPath(request: ParameterRequest): string {
-  const entities = ENTITY_ORDER.filter((entity) => request.entities[entity]).map((entity) => `${entity}=${request.entities[`${entity}_slug`] ?? ""}-${request.entities[entity]}`);
+  const entities = ENTITY_ORDER.filter((entity) => request.entities[entity]).map(
+    (entity) => `${entity}=${request.entities[`${entity}_slug`] ?? ""}-${request.entities[entity]}`,
+  );
   return [...entities, ...dimensionSegments(request.dimensions), ...parameterSegment(request)].join("/");
 }

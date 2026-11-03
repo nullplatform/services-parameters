@@ -17,4 +17,5 @@ export const realAwsClients: AwsClients = { sts: (region) => new STSClient({ reg
 export const assumedRolesOf = (clients: AwsClients): AssumedRoles => new AssumedRoles(clients.sts, AssumeRoleCommand);
 
 /** The client options an access resolves to. */
-export const clientOptions = (access: AwsAccess): { region: string; credentials?: AwsAccess["credentials"] } => (access.credentials ? { region: access.region, credentials: access.credentials } : { region: access.region });
+export const clientOptions = (access: AwsAccess): { region: string; credentials?: AwsAccess["credentials"] } =>
+  access.credentials ? { region: access.region, credentials: access.credentials } : { region: access.region };

@@ -6,7 +6,11 @@
 
 import type { WorkerConfig } from "./worker";
 
-const list = (value: string | undefined): string[] => (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+const list = (value: string | undefined): string[] =>
+  (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 
 export function workerConfigOf(env: Record<string, string | undefined> = process.env): WorkerConfig {
   return {

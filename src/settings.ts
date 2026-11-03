@@ -13,10 +13,20 @@ export interface SettingSource {
   fallback?: string;
 }
 
-const at = (attributes: Record<string, unknown>, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined), attributes);
+const at = (attributes: Record<string, unknown>, path: string): unknown =>
+  path
+    .split(".")
+    .reduce<unknown>(
+      (value, key) => (value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined),
+      attributes,
+    );
 
 /** The setting's value as text: the attribute when set, else the variable when set, else the fallback, else "". */
-export function settingOf(attributes: Record<string, unknown>, env: Record<string, string | undefined>, source: SettingSource): string {
+export function settingOf(
+  attributes: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+  source: SettingSource,
+): string {
   if (source.attribute !== undefined) {
     const value = at(attributes, source.attribute);
     if (value !== undefined && value !== null && value !== "") {

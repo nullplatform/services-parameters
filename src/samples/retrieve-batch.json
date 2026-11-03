@@ -20,9 +20,7 @@
       "specification_slug": "aws-secrets-manager",
       "attributes": {
         "sensibility": {
-          "applies_to": [
-            "secret"
-          ]
+          "applies_to": ["secret"]
         },
         "setup": {
           "kms_key_id": ""

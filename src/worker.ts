@@ -26,16 +26,27 @@ export interface WorkerConfig {
 export const ACTIONS = ["store", "retrieve", "delete", "notify"] as const;
 export type Action = (typeof ACTIONS)[number];
 
-const SAMPLES: Record<Action, Payload> = { store: storeSample.notification, retrieve: retrieveSample.notification, delete: deleteSample.notification, notify: notifySample.notification };
+const SAMPLES: Record<Action, Payload> = {
+  store: storeSample.notification,
+  retrieve: retrieveSample.notification,
+  delete: deleteSample.notification,
+  notify: notifySample.notification,
+};
 
 /** The request and the backend it names; a backend the image does not carry is refused by name. */
-export function routed(providers: ReadonlyMap<string, Provider>, payload: Payload): { request: ParameterRequest; provider: Provider } {
+export function routed(
+  providers: ReadonlyMap<string, Provider>,
+  payload: Payload,
+): { request: ParameterRequest; provider: Provider } {
   const request = requestOf(payload);
   const provider = providers.get(request.provider.slug);
   if (!provider) {
     throw new Failure("UNKNOWN_PROVIDER", {
       what: `The parameter is bound to ${request.provider.slug}, and this worker serves ${[...providers.keys()].join(", ")}`,
-      causes: ["The provider specification is not one this image implements", "The worker image is older than the provider"],
+      causes: [
+        "The provider specification is not one this image implements",
+        "The worker image is older than the provider",
+      ],
       fixes: [`Update the parameters worker to a version that implements ${request.provider.slug}`],
     });
   }
@@ -64,7 +75,10 @@ async function perform(session: Session, action: Action, request: ParameterReque
 export function parametersWorker(providers: Provider[], config: WorkerConfig) {
   const bySlug = new Map(providers.map((provider) => [provider.slug, provider] as const));
   const slugs = [...bySlug.keys()];
-  const channel = { source: config.sources[0] ?? "service", filter: { $or: slugs.map((slug) => ({ "provider.specification_slug": slug })) } };
+  const channel = {
+    source: config.sources[0] ?? "service",
+    filter: { $or: slugs.map((slug) => ({ "provider.specification_slug": slug })) },
+  };
   const route = (action: Action): Route => ({
     name: `parameter:${action}`,
     match: where({ action: `parameter:${action}` }),
@@ -91,7 +105,11 @@ export function parametersWorker(providers: Provider[], config: WorkerConfig) {
     },
   };
   return definePlugin({
-    package: { name: config.package.name, version: config.package.version, description: `Parameters and secrets stored in ${slugs.join(", ")}` },
+    package: {
+      name: config.package.name,
+      version: config.package.version,
+      description: `Parameters and secrets stored in ${slugs.join(", ")}`,
+    },
     agent: { sources: config.sources },
     routes: [...ACTIONS.map(route), batchRoute],
   });

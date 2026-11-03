@@ -49,8 +49,14 @@ export function externalIdOf(handle: string): ExternalId {
 export const handleOf = (path: string, version: string): string => (version ? `${path}#${version}` : path);
 
 const text = (value: unknown): string => (value === null || value === undefined ? "" : String(value));
-const record = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
-const texts = (value: unknown): Record<string, string> => Object.fromEntries(Object.entries(record(value)).filter(([, item]) => item !== null && item !== undefined).map(([key, item]) => [key, String(item)]));
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+const texts = (value: unknown): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(record(value))
+      .filter(([, item]) => item !== null && item !== undefined)
+      .map(([key, item]) => [key, String(item)]),
+  );
 
 /** The request a payload carries; a payload naming no provider is refused. */
 export function requestOf(payload: Payload): ParameterRequest {
@@ -101,7 +107,9 @@ export function batchRequestsOf(payload: Payload): ParameterRequest[] {
 /** The NRN of the request's entities, the scope included when the value is scoped. */
 export function nrnOf(request: ParameterRequest): string {
   const { entities } = request;
-  const segments = ["organization", "account", "namespace", "application"].map((entity) => `${entity}=${entities[entity] ?? ""}`);
+  const segments = ["organization", "account", "namespace", "application"].map(
+    (entity) => `${entity}=${entities[entity] ?? ""}`,
+  );
   if (entities.scope) {
     segments.push(`scope=${entities.scope}`);
   }
