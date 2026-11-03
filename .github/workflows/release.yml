@@ -1,9 +1,7 @@
 name: release
 
 # One chained run: release-please -> build and push to ECR Public -> artifact
-# registration -> release finalized with the image digest. Then the bash
-# package's image, pushed beside the worker's under the same tag with the -bash
-# suffix and noted in the release.
+# registration -> release finalized with the image digest.
 #
 # Recovery / backfill: dispatch with existing_tag to publish an existing tag.
 #
@@ -69,51 +67,3 @@ jobs:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
 
-  # The bash package's image, agent-plugins/services/parameters:<version>-bash:
-  # the same release and commit as the worker's, under one more tag of the same
-  # repository. No latest tag and no artifact of its own, so the artifact's newest
-  # revision stays the worker's; a deployment pins it by tag or digest.
-  bash-image:
-    needs: release
-    if: >-
-      ${{ !cancelled() && needs.release.result == 'success' &&
-          (needs.release.outputs.release_created == 'true' || inputs.existing_tag != '') }}
-    uses: nullplatform/actions-nullplatform/.github/workflows/docker-build-push-ecr.yml@v1
-    with:
-      image_name: agent-plugins/services/parameters
-      context: parameters
-      # On existing_tag backfills the run is dispatched from a branch: build the tag's commit.
-      ref: ${{ inputs.existing_tag || '' }}
-      tag: ${{ inputs.existing_tag || needs.release.outputs.tag_name }}-bash
-    secrets:
-      aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
-
-  bash-image-notes:
-    name: Note the bash image on the release
-    needs: [release, bash-image]
-    if: ${{ !cancelled() && needs.bash-image.result == 'success' }}
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TAG: ${{ inputs.existing_tag || needs.release.outputs.tag_name }}
-      IMAGE: public.ecr.aws/nullplatform/agent-plugins/services/parameters
-      IMAGE_TAG: ${{ needs.bash-image.outputs.image_tag }}
-      DIGEST: ${{ needs.bash-image.outputs.image_digest }}
-    steps:
-      # Runs after the release workflow finalized the notes, so the two sections never race.
-      - name: Append the bash image to the release notes
-        run: |
-          RELEASE_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.id')
-          BODY=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.body // ""')
-          if printf '%s' "$BODY" | grep -qF "$DIGEST"; then
-            echo "release $TAG already notes $DIGEST"
-            exit 0
-          fi
-          # shellcheck disable=SC2016  # backticks are markdown, not command substitution
-          SECTION=$(printf '## Bash image\n\n|  |  |\n|---|---|\n| Image | `%s` |\n| Digest | `%s` |\n| Pinned reference | `%s` |' \
-            "$IMAGE:$IMAGE_TAG" "$DIGEST" "$IMAGE@$DIGEST")
-          printf '%s\n\n%s' "$BODY" "$SECTION" > body.md
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F "body=@body.md" > /dev/null
-          echo "release $TAG notes the bash image $IMAGE_TAG"

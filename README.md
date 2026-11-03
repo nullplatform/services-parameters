@@ -14,18 +14,15 @@ payload), and the provider's configuration travels in that same payload — so a
 single agent can serve parameters routed to multiple backends simultaneously,
 with no per-agent configuration.
 
-The package ships as two worker images built from this repository, the same
-actions and the same backends in each:
+The package is **the worker**, TypeScript on bun and `@nullplatform/plugin`
+under `src/`, shipped as the image `agent-plugins/services/parameters`: an
+action is one call to the backend's API through its SDK, and
+`parameter:retrieve_batch` reads many values in one call.
 
-| Runtime | Code | Image |
-|---|---|---|
-| **The worker**: TypeScript on bun and `@nullplatform/plugin` | `src/` | `agent-plugins/services/parameters:<version>`, `latest`, and `beta/…:test-<branch>-<sha>` from pull requests |
-| **The bash package**: scripts on the `worker-bridge` | `parameters/` | `agent-plugins/services/parameters:<version>-bash` |
-
-The worker is the runtime going forward: an action is one call to the backend's
-API through its SDK, and `parameter:retrieve_batch` reads many values in one
-call. The bash package is what ran before; it stays published for whoever pins
-it and is not extended.
+**The bash package** under `parameters/` is what ran before, kept as it was for
+the agents still on the legacy `exec` channel, which clone this repository and
+run `parameters/entrypoint` themselves. It is not published as an image and is
+not extended: new backends and fixes go to the worker.
 
 ## Providers
 
@@ -49,11 +46,12 @@ answers what the operation returns. The channel comes from the
 [tofu-modules](https://github.com/nullplatform/tofu-modules) with
 `worker_orchestrator = true`.
 
-Which image the agent spawns is its worker pin for the package `parameters`:
-the worker image, or the `-bash` tag of the same version. Both answer the same
-actions with the same results and store under the same names, and the handle
-nullplatform keeps (`external_id`) is the same canonical form, so an
-installation can move from one to the other.
+Without the worker orchestrator the channel stays the legacy `exec` one: the
+agent clones this repository and runs `parameters/entrypoint` in its own
+container, the bash package. Both runtimes answer the same actions with the
+same results and store under the same names, and the handle nullplatform keeps
+(`external_id`) is the same canonical form, so an installation moves from the
+bash package to the worker with nothing to migrate.
 
 ## Repository layout
 
@@ -73,8 +71,7 @@ installation can move from one to the other.
 │   └── providers/           # index.ts (every provider) and <slug>/index.ts (each one)
 ├── test/                    # one suite per provider against a fake of its client
 ├── docs/                    # the worker: architecture, configuration, adding a provider
-├── parameters/              # the bash package
-│   ├── Dockerfile           # its image: worker-bridge + aws-cli + these scripts
+├── parameters/              # the bash package, for the legacy exec channel
 │   ├── entrypoint           # action router (parameter:<action> → workflow)
 │   ├── workflows/           # store / retrieve / delete / notify
 │   ├── utils/               # build_context, dispatch, assume_role*, build_external_id, ...
@@ -151,7 +148,6 @@ repository, and hands it every action routed to it, whatever backend each one na
 |---|---|---|
 | `np package build --image` | `mise run build:image` | Builds `parameters:dev`, the worker |
 | `np package run` | `mise run run` | Builds the image, then starts the local agent |
-| `mise run build:bash-image` | | Builds `parameters-bash:dev`, the bash package, to run with `NP_WORKER_IMAGE=parameters-bash:dev` |
 
 Prerequisites: **Docker** with host networking (Linux as is; on Docker Desktop enable *host
 networking*), **[mise](https://mise.jdx.dev)** (`mise trust` once here), an **`NP_API_KEY`** for
@@ -179,7 +175,6 @@ forward nothing.
 |---|---|---|
 | `NP_API_KEY` | required | The key the agent registers with (`--api-key` also sets it) |
 | `NP_LOG_LEVEL` | `INFO` | Agent log level (`--log-level` also sets it) |
-| `NP_WORKER_IMAGE` | `parameters:dev` | The image the agent spawns; `parameters-bash:dev` for the bash package |
 | `NP_PACKAGE_SLUG` | `parameters` | The slug in the `package:<slug>` tag, when published under another slug |
 | `NP_LOCAL_USER` | `$USER` | The value of the `local:<user>` tag |
 | `NP_AGENT_IMAGE` | `controlplane-agent:latest` | The agent image; needs worker rules (0.11.1+) |
@@ -191,12 +186,12 @@ forward nothing.
 | branch-validation | PR | branch named `feat/…`, `fix/…`, `chore/…` |
 | conventional-commit | PR | commit messages (release-please reads them) |
 | shellcheck | PR | every bash script |
-| tests | PR | `tofu fmt`/`validate` of every provider spec; the worker's type-check, lint, format check and tests; the bash package's BATS tests and image build |
-| trivy | PR | IaC misconfiguration scan, and both images scanned, to the Security tab |
+| tests | PR | `tofu fmt`/`validate` of every provider spec; the worker's type-check, lint, format check and tests; the bash package's BATS tests |
+| trivy | PR | IaC misconfiguration and image scan, to the Security tab |
 | beta | PR (opened, push, reopened) | publish-test-image-oci: pushes the worker as `beta/<image>:test-<branch>-<short sha>` and registers it as a nullplatform artifact |
-| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` of the worker to ECR Public → nullplatform artifact → GitHub release; then `vX.Y.Z-bash`, the bash package's image, noted on the release |
+| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` of the worker to ECR Public → nullplatform artifact → GitHub release |
 | auto-merge-release | after release | merges the release PR |
-| dependabot | daily / weekly | base image (both Dockerfiles) and shared workflow bumps |
+| dependabot | daily / weekly | base image and shared workflow bumps |
 
 ## Image tags
 
@@ -204,13 +199,7 @@ forward nothing.
 |---|---|---|
 | `agent-plugins/services/parameters:vX.Y.Z` | its release, once | pin an exact version of the worker |
 | `agent-plugins/services/parameters:latest` | each release | follow the last released worker |
-| `agent-plugins/services/parameters:vX.Y.Z-bash` | its release, once | pin the bash package at that version |
 | `beta/agent-plugins/services/parameters:test-<branch>-<short sha>` | each push to a pull request of this repository | deploy a worker change to a test scope before merging it |
-
-The bash image is one more tag of the release's repository, built from the same
-commit: it has no `latest` and is not registered as an artifact, so the
-artifact's newest revision is always the worker's. Pin it by tag or digest in
-the agent's worker pin.
 
 Beta images live in a separate repository that the beta role can write and the production role cannot, so a beta can never overwrite a released image. Pull requests from this repository can assume the beta role (fork and bot pull requests are skipped), and the tag carries the commit SHA, so two pull requests never overwrite each other by accident. Nothing deletes beta tags: they are ephemeral by convention. Each beta is also registered as its own nullplatform oci_image artifact (the `beta/` repository, under `NP_ARTIFACT_NRN`), separate from the release artifact, so it can be deployed to a test scope from the platform.
 

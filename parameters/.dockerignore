@@ -1,8 +1,0 @@
-# Only what the entrypoint runs goes into the image: the scripts, the workflows and the providers' scripts.
-Dockerfile
-.dockerignore
-tests
-docs
-**/docs
-**/specs
-**/*.md
