@@ -6,7 +6,7 @@ provider's configuration along (`provider.attributes`), so a worker needs no con
 its own beyond the credentials in its environment.
 
 This is the TypeScript worker under `src/`. The bash package under `parameters/` is the same
-package as scripts on the worker-bridge; its own architecture is
+package as scripts, run by the agents still on the legacy `exec` channel; its own architecture is
 [parameters/docs/architecture.md](../parameters/docs/architecture.md).
 
 ## One worker image, every backend in one worker
@@ -47,6 +47,11 @@ Vault have no batch read and answer the values read in parallel, ten at a time
 (`retrieveEach`, `src/provider.ts`). A value a batch could not read is read on its own; one that
 still fails is left out, and the platform retrieves it with a single `parameter:retrieve`.
 
+A client without the route fails the whole command, and the platform then retrieves every value
+one by one, as it does after any failed batch: the bash package has no `retrieve_batch` workflow
+and exits on it, an older worker image refuses it as `UNKNOWN` action. So the API can send batches
+to every client; one without the route pays one failed round trip per batch and loses nothing.
+
 ## Storage naming: human-friendliness principle
 
 Every provider composes its name from the parameter's NRN entities (slug and id), its
@@ -63,8 +68,8 @@ the dimensions sorted by key. Each backend applies its prefix and charset: Secre
 Manager `<prefix>__` + the path with `/` as `__` and `=` as `-`; Vault `<path prefix>/` + the
 path, the prefix embedded in the handle; Key Vault a slug-free, dash-joined name from the
 application, the scope, the dimensions and the parameter, to fit 127 characters. The handle
-nullplatform keeps (`external_id`) is the canonical form, the same the bash package writes, so a
-parameter can move between backends and an installation between the two runtimes.
+nullplatform keeps (`external_id`) is the canonical form, the same the bash package wrote, so a
+parameter can move between backends and an installation from the bash package to the worker.
 
 ### Version in the handle
 

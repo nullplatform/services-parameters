@@ -1,4 +1,4 @@
-> The bash package's documentation: the scripts under `parameters/`, published as the `<version>-bash` image. The worker's is under [`docs/`](../../docs/) at the repository root.
+> The bash package's documentation: the scripts under `parameters/`, run by the agents on the legacy `exec` channel, which clone this repository; not published as an image. The worker's is under [`docs/`](../../docs/) at the repository root.
 
 # Adding a New Provider
 
@@ -77,7 +77,7 @@ mkdir -p parameters/providers/<provider_name>/docs
 mkdir -p parameters/tests/providers/<provider_name>
 ```
 
-`<provider_name>` must match the `slug` field of the `parameters-storage` provider specification you (or the platform admin) registered in nullplatform. The agent's `build_context` calls `np provider specification read --id <specification_id>`, reads `.slug`, and uses it to find your directory.
+`<provider_name>` must match the `slug` field of the `parameters-storage` provider specification you (or the platform admin) registered in nullplatform. Every notification carries that slug as `provider.specification_slug`; `build_context` reads it and uses it to find your directory.
 
 ---
 
@@ -288,7 +288,7 @@ If the backend needs IAM-style permissions (AWS, GCP), add `iam-policy.md` with 
 1. Register a `parameters-storage` provider in nullplatform with `slug: <provider_name>` and the schema for your provider's config attributes (use a `.json.tpl` file as the spec — see existing providers for examples).
 2. Bind parameters in nullplatform to that provider specification.
 
-Done. The agent receives `provider.specification_id` and `provider.attributes` in every notification for those parameters; `build_context` resolves the slug, finds your directory, and dispatches.
+Done. The agent receives `provider.specification_slug` and `provider.attributes` in every notification for those parameters; `build_context` finds your directory by the slug and dispatches.
 
 ---
 

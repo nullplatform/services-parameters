@@ -1,4 +1,4 @@
-> The bash package's documentation: the scripts under `parameters/`, published as the `<version>-bash` image. The worker's is under [`docs/`](../../docs/) at the repository root.
+> The bash package's documentation: the scripts under `parameters/`, run by the agents on the legacy `exec` channel, which clone this repository; not published as an image. The worker's is under [`docs/`](../../docs/) at the repository root.
 
 # Configuration
 
@@ -20,25 +20,20 @@ Each notification from nullplatform includes the full information needed to hand
 | `encoding` | encoding of the value (`plain`, `base64`, etc.) |
 | `entities` | NRN parsed into entity IDs (organization, account, namespace, application) |
 | `dimensions` | optional object — parameter scoping (env, country, etc.) |
-| **`provider.specification_id`** | **UUID identifying which provider handles this parameter** |
+| **`provider.specification_slug`** | **the slug of the provider that handles this parameter**: the directory under `parameters/providers/` |
+| `provider.specification_id` | the provider specification's UUID (informational) |
 | **`provider.attributes`** | **Provider-specific configuration (region, vault address, etc.)** |
 | `provider.nrn` | Provider-instance NRN (informational) |
 | `provider.dimensions` | Provider-instance dimensions. **Do NOT use this field** — it is internal to the platform's provider system and unrelated to the parameter's `.dimensions`. Parameter dimensions come from top-level `.dimensions` only. |
 | `provider.id` | Provider-instance ID (informational) |
 
-The two fields that drive the dispatch are `provider.specification_id` (which provider) and `provider.attributes` (its config).
+The two fields that drive the dispatch are `provider.specification_slug` (which provider) and `provider.attributes` (its config).
 
 ---
 
 ## Provider resolution
 
-`build_context` calls:
-
-```bash
-np provider specification read --id <provider.specification_id> --format json
-```
-
-The response includes a `slug` field. That slug must match the name of a directory under `parameters/providers/`. For example:
+`build_context` reads `provider.specification_slug` from the payload; nothing is asked of the platform. The slug must match the name of a directory under `parameters/providers/`:
 
 | Slug returned | Provider directory used |
 |---|---|
@@ -140,23 +135,16 @@ Only `project_id` is required. Authentication comes from the metadata server (th
 
 ## Local development
 
-For local testing without involving the platform, set the relevant env vars and use a stubbed `np` CLI that returns a known slug:
+For local testing without involving the platform, set the provider's env vars and hand the entrypoint a context that names the provider in `provider.specification_slug`. The `np` CLI is still needed: the entrypoint runs each workflow through `np service workflow exec`.
 
 ```bash
-# Stub np in PATH
-cat > /tmp/np << 'EOF'
-#!/bin/bash
-echo '{"slug": "hashicorp-vault"}'
-EOF
-chmod +x /tmp/np
-export PATH=/tmp:$PATH
-
 # Set the provider's env vars
 export VAULT_ADDR=http://localhost:8200
 export VAULT_TOKEN=root-token
 
-# Now invoke the entrypoint
-NP_ACTION_CONTEXT='...' NOTIFICATION_ACTION='parameter:store' ./parameters/entrypoint
+# Now invoke the entrypoint with a notification naming the provider
+NP_ACTION_CONTEXT='{"notification":{"action":"parameter:store","parameter_id":1,"value":"x","secret":true,"provider":{"specification_slug":"hashicorp-vault","attributes":{}},"entities":{}}}' \
+NOTIFICATION_ACTION='parameter:store' ./parameters/entrypoint
 ```
 
 All providers fall through to env vars when `PROVIDER_CONFIG` is missing fields, making local-only iteration possible.

@@ -1,8 +1,8 @@
-> The bash package's documentation: the scripts under `parameters/`, published as the `<version>-bash` image. The worker's is under [`docs/`](../../docs/) at the repository root.
+> The bash package's documentation: the scripts under `parameters/`, run by the agents on the legacy `exec` channel, which clone this repository; not published as an image. The worker's is under [`docs/`](../../docs/) at the repository root.
 
 # Parameters Package — Architecture
 
-A pluggable parameter and secret storage layer for nullplatform scopes. The provider for each parameter is chosen by the platform itself (via `provider.specification_id` in the notification payload), and the provider's configuration travels in the same payload.
+A pluggable parameter and secret storage layer for nullplatform scopes. The provider for each parameter is chosen by the platform itself (via `provider.specification_slug` in the notification payload), and the provider's configuration travels in the same payload.
 
 ---
 
@@ -49,9 +49,8 @@ The platform decides which provider handles each parameter and which configurati
 │  parameters/utils/build_context                                │
 │  - Parse CONTEXT → EXTERNAL_ID, PARAMETER_ID, PARAMETER_VALUE  │
 │  - Derive PARAMETER_KIND from $CONTEXT.secret                  │
-│  - Read $CONTEXT.provider.specification_id                     │
-│  - np provider specification read --id <spec_id> → slug        │
-│  - ACTIVE_PROVIDER = slug; PROVIDER_DIR = providers/$slug      │
+│  - ACTIVE_PROVIDER = $CONTEXT.provider.specification_slug      │
+│  - PROVIDER_DIR = providers/$ACTIVE_PROVIDER                   │
 │  - PROVIDER_CONFIG = $CONTEXT.provider.attributes              │
 │  - Source providers/$ACTIVE_PROVIDER/setup                     │
 └────────────────────────────────────────────────────────────────┘
@@ -118,16 +117,7 @@ Because nullplatform already persists and re-sends `external_id` on every operat
 
 ## How the provider is chosen
 
-For each parameter, nullplatform stores which provider should handle it. That choice travels with every notification as `provider.specification_id` — a UUID pointing to a "provider specification" entity in nullplatform.
-
-`build_context` resolves this UUID into a slug using the np CLI:
-
-```
-np provider specification read --id <specification_id> --format json
-→ { "slug": "aws-secrets-manager", ... }
-```
-
-The slug becomes `ACTIVE_PROVIDER`, which must match a directory under `parameters/providers/`. The match is exact, case-sensitive.
+For each parameter, nullplatform stores which provider should handle it. That choice travels with every notification as `provider.specification_slug`, the slug of the `parameters-storage` provider specification (its id comes along as `provider.specification_id`). `build_context` reads the slug as `ACTIVE_PROVIDER`, which must match a directory under `parameters/providers/`, exact and case-sensitive; a slug with no directory fails with the list of the providers installed. No call to the platform is needed.
 
 The provider's configuration travels in the same payload at `provider.attributes`. `build_context` exports it as `PROVIDER_CONFIG` (a JSON string). Each provider's `setup` reads from `PROVIDER_CONFIG` via `get_config_value --provider '.field'` to extract specific fields (region, kms_key_id, etc.).
 
@@ -142,7 +132,7 @@ parameters/
 ├── entrypoint              # Action router (the only loose script — entry point)
 ├── workflows/              # 4 YAMLs (one per action), each sets ACTION via configuration
 ├── utils/                  # All shared scripts live here
-│   ├── build_context       # Resolves ACTIVE_PROVIDER from spec_id, sources setup
+│   ├── build_context       # Reads ACTIVE_PROVIDER from the payload's slug, sources setup
 │   ├── build_external_id   # Composes <path>#<version> via parallel np slug fetches
 │   ├── dispatch            # Unified action dispatcher (reads $ACTION)
 │   ├── get_config_value    # Priority: provider config > env > default

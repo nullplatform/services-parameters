@@ -10,8 +10,8 @@ set -euo pipefail
 #   1. Extract notification fields into env vars
 #   2. Derive PARAMETER_KIND from $CONTEXT.secret (still useful for providers
 #      like aws-parameter-store that choose String vs SecureString)
-#   3. Resolve ACTIVE_PROVIDER from $CONTEXT.provider.specification_id via
-#      `np provider specification read` — its `.slug` IS the provider directory name
+#   3. Read ACTIVE_PROVIDER from $CONTEXT.provider.specification_slug, which IS
+#      the provider directory name (the platform ships it in every notification)
 #   4. Set PROVIDER_CONFIG from $CONTEXT.provider.attributes (config travels in
 #      the payload — no separate fetch_configuration step needed)
 #   5. Source providers/<active>/setup (validates provider-specific config and

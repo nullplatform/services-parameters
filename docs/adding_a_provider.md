@@ -55,6 +55,8 @@ come from the environment only, never from the attributes.
   left out is retrieved by the platform on its own. A backend with a batch read uses it in
   chunks (`chunks`, `src/provider.ts`) and reads what the batch refused one by one; a backend
   without one answers `retrieveEach(this, requests, this.context.log)`, or leaves the method out.
+  A client with no route at all (the bash package, an older image) fails the command, and the
+  platform retrieves one by one, as after any failed batch: nothing breaks on an old client.
 - `delete`: `{ success: true }`, also when the secret is already gone; any other error fails.
 - A failure is a `Failure` (`src/failure.ts`): a code, what went wrong, the likely causes, how to
   fix it and what the backend said, in the words the bash printed.
