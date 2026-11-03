@@ -1,5 +1,5 @@
 /** The request every suite starts from, as the platform sends a parameter action, and the fakes the backends are answered with. */
-import type { Context, Payload } from "@nullplatform/plugin";
+import type { Api, Context, Payload } from "@nullplatform/plugin";
 import { requestOf, type ParameterRequest } from "../src/context";
 import storeSample from "../src/samples/store.json" with { type: "json" };
 
@@ -31,7 +31,11 @@ export const requestFor = (slug: string, extra: Record<string, unknown> = {}): P
   requestOf(payloadFor(slug, extra));
 
 /** The platform's providers API, faked: one category and one specification, `providers` the rows over any NRN, each read whole by its id. */
-export function fakeApi(providers: Array<Record<string, unknown>>): { api: unknown; calls: string[] } {
+/** A row as a listing carries it: without its attributes, as the API's listings do. */
+const listedRow = (row: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(row).filter(([key]) => key !== "attributes"));
+
+export function fakeApi(providers: Array<Record<string, unknown>>): { api: Api; calls: string[] } {
   const calls: string[] = [];
   const rows: Array<Record<string, unknown>> = providers.map((provider, index) => ({
     id: `p${index + 1}`,
@@ -52,7 +56,7 @@ export function fakeApi(providers: Array<Record<string, unknown>>): { api: unkno
     {
       get: async (query: Record<string, unknown>) => {
         calls.push(`GET /provider ${JSON.stringify(query)}`);
-        return listing(rows.map(({ attributes, ...row }) => row));
+        return listing(rows.map(listedRow));
       },
     },
   );
@@ -71,7 +75,7 @@ export function fakeApi(providers: Array<Record<string, unknown>>): { api: unkno
     },
     provider,
   };
-  return { api, calls };
+  return { api: api as unknown as Api, calls };
 }
 
 /** A context whose log is kept and whose platform answers `providers` (none unless given). */

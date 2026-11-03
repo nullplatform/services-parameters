@@ -1,13 +1,14 @@
 /**
- * The parameters worker: four raw routes, `parameter:store`,
- * `parameter:retrieve`, `parameter:delete` and `parameter:notify`, each
- * reading the request from the notification, picking the backend the request
- * names in `provider.specification_slug`, opening that provider's session and
- * answering what the operation returns. One worker serves every backend the
- * image carries.
+ * The parameters worker: one raw route per action, `parameter:store`,
+ * `parameter:retrieve`, `parameter:delete`, `parameter:notify` and
+ * `parameter:retrieve_batch`. Each reads the request from the notification,
+ * picks the backend the request names in `provider.specification_slug`, opens
+ * that provider's session and answers what the operation returns. One worker
+ * serves every backend the image carries.
  */
 
 import { definePlugin, where, type Context, type Payload, type Route } from "@nullplatform/plugin";
+import type { WorkerConfig } from "./config";
 import { batchRequestsOf, requestOf, type ParameterRequest } from "./context";
 import { Failure } from "./failure";
 import { DONE, type Provider, type Session } from "./provider";
@@ -17,15 +18,10 @@ import retrieveBatchSample from "./samples/retrieve-batch.json" with { type: "js
 import retrieveSample from "./samples/retrieve.json" with { type: "json" };
 import storeSample from "./samples/store.json" with { type: "json" };
 
-export interface WorkerConfig {
-  package: { name: string; version: string };
-  /** The notification sources the agent routes here. */
-  sources: string[];
-}
-
 export const ACTIONS = ["store", "retrieve", "delete", "notify"] as const;
 export type Action = (typeof ACTIONS)[number];
 
+/** One notification per action, as the platform sends it: the manifest's runs and the tests' start. */
 const SAMPLES: Record<Action, Payload> = {
   store: storeSample.notification,
   retrieve: retrieveSample.notification,
@@ -33,11 +29,13 @@ const SAMPLES: Record<Action, Payload> = {
   notify: notifySample.notification,
 };
 
+interface Routed {
+  request: ParameterRequest;
+  provider: Provider;
+}
+
 /** The request and the backend it names; a backend the image does not carry is refused by name. */
-export function routed(
-  providers: ReadonlyMap<string, Provider>,
-  payload: Payload,
-): { request: ParameterRequest; provider: Provider } {
+export function routed(providers: ReadonlyMap<string, Provider>, payload: Payload): Routed {
   const request = requestOf(payload);
   const provider = providers.get(request.provider.slug);
   if (!provider) {
@@ -53,6 +51,14 @@ export function routed(
   return { request, provider };
 }
 
+/** What one action answers: the session's operation, or the default ack on a notify the backend has nothing to do on. */
+async function perform(session: Session, action: Action, request: ParameterRequest): Promise<unknown> {
+  if (action === "notify") {
+    return session.notify ? session.notify(request) : DONE;
+  }
+  return session[action](request);
+}
+
 /** The values of a batch, from the backend's own batch read; a backend without one refuses, and the platform retrieves them one by one. */
 async function performBatch(session: Session, provider: Provider, requests: ParameterRequest[]): Promise<unknown> {
   if (!session.retrieveBatch) {
@@ -65,13 +71,6 @@ async function performBatch(session: Session, provider: Provider, requests: Para
   return session.retrieveBatch(requests);
 }
 
-async function perform(session: Session, action: Action, request: ParameterRequest): Promise<unknown> {
-  if (action === "notify") {
-    return session.notify ? session.notify(request) : DONE;
-  }
-  return session[action](request);
-}
-
 export function parametersWorker(providers: Provider[], config: WorkerConfig) {
   const bySlug = new Map(providers.map((provider) => [provider.slug, provider] as const));
   const slugs = [...bySlug.keys()];
@@ -79,7 +78,7 @@ export function parametersWorker(providers: Provider[], config: WorkerConfig) {
     source: config.sources[0] ?? "service",
     filter: { $or: slugs.map((slug) => ({ "provider.specification_slug": slug })) },
   };
-  const route = (action: Action): Route => ({
+  const actionRoute = (action: Action): Route => ({
     name: `parameter:${action}`,
     match: where({ action: `parameter:${action}` }),
     output: () => "raw" as const,
@@ -111,6 +110,6 @@ export function parametersWorker(providers: Provider[], config: WorkerConfig) {
       description: `Parameters and secrets stored in ${slugs.join(", ")}`,
     },
     agent: { sources: config.sources },
-    routes: [...ACTIONS.map(route), batchRoute],
+    routes: [...ACTIONS.map(actionRoute), batchRoute],
   });
 }

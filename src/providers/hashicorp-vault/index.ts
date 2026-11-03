@@ -11,6 +11,7 @@
 import type { Context } from "@nullplatform/plugin";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure } from "../../failure";
+import { parsedObject, text, valueAt, type JsonObject } from "../../json";
 import { canonicalPath } from "../../naming";
 import { DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
@@ -33,7 +34,7 @@ export interface VaultOptions {
 
 interface Answer {
   status: number;
-  body: Record<string, any>;
+  body: JsonObject;
   text: string;
 }
 
@@ -78,14 +79,8 @@ export class VaultApi {
     } catch {
       return { status: 0, body: {}, text: "" };
     }
-    const text = await response.text();
-    let body: Record<string, any> = {};
-    try {
-      body = text ? (JSON.parse(text) as Record<string, any>) : {};
-    } catch {
-      body = {};
-    }
-    return { status: response.status, body, text };
+    const raw = await response.text();
+    return { status: response.status, body: parsedObject(raw), text: raw };
   }
 }
 
@@ -137,11 +132,7 @@ class VaultSession implements Session {
         underlying: answer.text,
       });
     }
-    const version = answer.body?.data?.version;
-    return {
-      external_id: handleOf(path, version === undefined || version === null ? "" : String(version)),
-      metadata: { vault_path: path },
-    };
+    return { external_id: handleOf(path, text(valueAt(answer.body, "data.version"))), metadata: { vault_path: path } };
   }
 
   async retrieve(request: ParameterRequest) {
@@ -155,8 +146,7 @@ class VaultSession implements Session {
       throw this.networkFailure("Network error calling Vault");
     }
     if (answer.status >= 200 && answer.status < 300) {
-      const value = answer.body?.data?.data?.value;
-      return { value: value === undefined || value === null ? "" : String(value) };
+      return { value: text(valueAt(answer.body, "data.data.value")) };
     }
     if (answer.status === 404) {
       throw new Failure("NOT_FOUND", {
@@ -207,14 +197,16 @@ class VaultSession implements Session {
   }
 }
 
+/** What a login needs besides the API: the provider's attributes, the environment the credentials are in, and the reader of the pod's token. */
+export interface LoginOptions {
+  attributes: Record<string, unknown>;
+  env: Record<string, string | undefined>;
+  clients: VaultClients;
+}
+
 /** Logs in as the configuration says and returns the client token. */
-export async function login(
-  api: VaultApi,
-  mode: string,
-  attributes: Record<string, unknown>,
-  env: Record<string, string | undefined>,
-  clients: VaultClients,
-): Promise<string> {
+export async function login(api: VaultApi, mode: string, options: LoginOptions): Promise<string> {
+  const { attributes, env, clients } = options;
   let path: string;
   let body: Record<string, string>;
   if (mode === "userpass") {
@@ -288,9 +280,9 @@ export async function login(
       fixes: [`Test connectivity: curl -s ${api.address}/v1/sys/health`],
     });
   }
-  const token = answer.body?.auth?.client_token;
-  if (typeof token !== "string" || token === "") {
-    const errors = Array.isArray(answer.body?.errors) ? answer.body.errors.join("; ") : "unknown error";
+  const token = text(valueAt(answer.body, "auth.client_token"));
+  if (token === "") {
+    const errors = Array.isArray(answer.body.errors) ? answer.body.errors.join("; ") : "unknown error";
     throw new Failure("LOGIN_FAILED", {
       what: `Vault ${mode} login did not return a token`,
       causes:
@@ -355,7 +347,7 @@ export function hashicorpVault(options: VaultOptions = {}): Provider {
         });
       }
       const api = new VaultApi(clients.fetch, address.replace(/\/+$/, ""), namespace);
-      const token = await login(api, mode, attributes, env, clients);
+      const token = await login(api, mode, { attributes, env, clients });
       return new VaultSession(api, token, pathPrefix, now, context);
     },
   };

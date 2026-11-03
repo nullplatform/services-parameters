@@ -19,8 +19,15 @@ import {
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
 import type { Context } from "@nullplatform/plugin";
-import { assumedRolesOf, clientOptions, realAwsClients, type AwsClients } from "../../aws/clients";
-import { awsAccess, type AwsAccess, type RoleSelection, type Sender } from "../../aws/role";
+import {
+  clientOptions,
+  errorNameOf,
+  realAwsClients,
+  type AwsAccess,
+  type AwsClients,
+  type Sender,
+} from "../../aws/clients";
+import { AssumedRoles, awsAccess, type RoleSelection } from "../../aws/role";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure, messageOf } from "../../failure";
 import { canonicalPath } from "../../naming";
@@ -47,17 +54,24 @@ export interface SecretsManagerOptions {
   now?: () => Date;
 }
 
-const errorName = (error: unknown): string => (error instanceof Error ? error.name : "");
-
-/** The envelope a secret holds, as the bash wrote it. */
 /** How many secrets one BatchGetSecretValue reads. */
 export const BATCH_SIZE = 20;
 
-interface BatchAnswer {
-  SecretValues?: Array<{ Name?: string; VersionId?: string; SecretString?: string }>;
-  Errors?: Array<{ SecretId?: string; ErrorCode?: string; Message?: string }>;
+/** What Secrets Manager answers, the fields read here. */
+interface StoredSecret {
+  ARN?: string;
+  VersionId?: string;
 }
 
+interface SecretValue {
+  SecretString?: string;
+}
+
+interface BatchAnswer {
+  SecretValues?: Array<{ Name?: string; VersionId?: string; SecretString?: string }>;
+}
+
+/** The envelope a secret holds, as the bash wrote it. */
 export const envelopeOf = (request: ParameterRequest, path: string, storedAt: Date): string =>
   JSON.stringify({
     parameter_id: request.parameterId ? Number(request.parameterId) : null,
@@ -79,9 +93,9 @@ class SecretsManagerSession implements Session {
     const path = canonicalPath(request);
     const name = `${NAME_PREFIX}${path}`;
     const secretString = envelopeOf(request, path, this.now());
-    let result: { ARN?: string; VersionId?: string };
+    let result: StoredSecret;
     try {
-      result = await this.secrets.send(
+      result = await this.secrets.send<StoredSecret>(
         new CreateSecretCommand({
           Name: name,
           SecretString: secretString,
@@ -89,7 +103,7 @@ class SecretsManagerSession implements Session {
         }),
       );
     } catch (error) {
-      if (errorName(error) !== "ResourceExistsException") {
+      if (errorNameOf(error) !== "ResourceExistsException") {
         throw new Failure("STORE_FAILED", {
           what: "Failed to store parameter in AWS Secrets Manager",
           causes: [
@@ -102,7 +116,9 @@ class SecretsManagerSession implements Session {
       }
       this.context.log.debug(`Secret '${name}' exists; adding new version (history preserved by AWS SM)`);
       try {
-        result = await this.secrets.send(new PutSecretValueCommand({ SecretId: name, SecretString: secretString }));
+        result = await this.secrets.send<StoredSecret>(
+          new PutSecretValueCommand({ SecretId: name, SecretString: secretString }),
+        );
       } catch (again) {
         throw new Failure("STORE_FAILED", {
           what: `Failed to add new version to secret '${name}'`,
@@ -124,13 +140,13 @@ class SecretsManagerSession implements Session {
   async retrieve(request: ParameterRequest) {
     const name = `${NAME_PREFIX}${request.externalId.path}`;
     const version = request.externalId.version;
-    let answer: { SecretString?: string };
+    let answer: SecretValue;
     try {
-      answer = await this.secrets.send(
+      answer = await this.secrets.send<SecretValue>(
         new GetSecretValueCommand({ SecretId: name, ...(version ? { VersionId: version } : {}) }),
       );
     } catch (error) {
-      if (errorName(error) === "ResourceNotFoundException") {
+      if (errorNameOf(error) === "ResourceNotFoundException") {
         throw new Failure("NOT_FOUND", {
           what: `Secret '${name}' not found in AWS Secrets Manager`,
           causes: [
@@ -165,24 +181,26 @@ class SecretsManagerSession implements Session {
     const values: RetrievedBatch["values"] = [];
     const alone: ParameterRequest[] = [];
     await Promise.all(
-      chunks([...byName.keys()], BATCH_SIZE).map(async (names) => {
+      chunks([...byName], BATCH_SIZE).map(async (group) => {
+        const names = group.map(([name]) => name);
         let answer: BatchAnswer;
         try {
-          answer = await this.secrets.send(new BatchGetSecretValueCommand({ SecretIdList: names }));
+          answer = await this.secrets.send<BatchAnswer>(new BatchGetSecretValueCommand({ SecretIdList: names }));
         } catch (error) {
           this.context.log.warn(
             `batch read of ${names.length} secrets failed, reading them one by one: ${messageOf(error)}`,
           );
-          alone.push(...names.map((name) => byName.get(name) as ParameterRequest));
+          alone.push(...group.map(([, request]) => request));
           return;
         }
         const read = new Set<string>();
         for (const secret of answer.SecretValues ?? []) {
-          const request = secret.Name === undefined ? undefined : byName.get(secret.Name);
+          const name = secret.Name ?? "";
+          const request = byName.get(name);
           if (!request) {
             continue;
           }
-          read.add(secret.Name as string);
+          read.add(name);
           if (request.externalId.version && secret.VersionId !== request.externalId.version) {
             alone.push(request);
             continue;
@@ -192,7 +210,7 @@ class SecretsManagerSession implements Session {
             value: valueOf(secret.SecretString ?? ""),
           });
         }
-        alone.push(...names.filter((name) => !read.has(name)).map((name) => byName.get(name) as ParameterRequest));
+        alone.push(...group.filter(([name]) => !read.has(name)).map(([, request]) => request));
       }),
     );
     values.push(...(await retrieveEach(this, alone, this.context.log)).values);
@@ -204,7 +222,7 @@ class SecretsManagerSession implements Session {
     try {
       await this.secrets.send(new DeleteSecretCommand({ SecretId: name, ForceDeleteWithoutRecovery: true }));
     } catch (error) {
-      if (errorName(error) !== "ResourceNotFoundException") {
+      if (errorNameOf(error) !== "ResourceNotFoundException") {
         throw new Failure("DELETE_FAILED", {
           what: `Failed to delete secret '${name}' in AWS Secrets Manager`,
           causes: [
@@ -241,7 +259,7 @@ export function awsSecretsManager(options: SecretsManagerOptions = {}): Provider
     secrets: (access) => new SecretsManagerClient(clientOptions(access)),
   };
   const env = options.env ?? process.env;
-  const roles = assumedRolesOf(clients);
+  const roles = new AssumedRoles(clients.sts);
   const now = options.now ?? (() => new Date());
   return {
     slug: SLUG,

@@ -7,16 +7,13 @@
  * call serves the actions of the next hour, as the bash's file cache did.
  */
 
+import { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import type { AwsCredentialIdentity } from "@aws-sdk/types";
 import type { Context, Logger } from "@nullplatform/plugin";
 import { nrnOf, type ParameterRequest } from "../context";
 import { Failure, messageOf } from "../failure";
 import { providerOf } from "../platform/providers";
-
-/** A client the SDK's commands are sent through; a test fakes it. */
-export interface Sender {
-  send(command: unknown): Promise<any>;
-}
+import type { AwsAccess, Sender } from "./clients";
 
 export interface RoleSelection {
   /** The key under the IAM provider's `iam_role_arns.arns[]`. */
@@ -29,27 +26,27 @@ export interface RoleSelection {
   sessionPrefix: string;
 }
 
-export interface AwsAccess {
-  region: string;
-  /** The assumed role's credentials; none runs as the agent. */
-  credentials?: AwsCredentialIdentity;
+/** The IAM provider's `iam_role_arns` attribute: one ARN per selector. */
+interface IamRoles {
+  arns?: Array<{ selector?: string; arn?: string }>;
 }
 
 /** The ARN the IAM provider's attributes name for `selector`; "" when none. */
 export function arnForSelector(attributes: Record<string, unknown>, selector: string): string {
-  const roles =
-    (attributes.iam_role_arns as { arns?: Array<{ selector?: string; arn?: string }> } | undefined)?.arns ?? [];
+  const roles = (attributes.iam_role_arns as IamRoles | undefined)?.arns ?? [];
   return roles.find((role) => role.selector === selector)?.arn ?? "";
 }
 
-/** The ARN to assume, "" to run as the agent: the override, else the provider's, else the default. */
-export function resolveRoleArn(input: {
+export interface RoleChoice {
   override?: string;
   attributes: Record<string, unknown>;
   selector: string;
   fallback?: string;
-}): string {
-  return input.override || arnForSelector(input.attributes, input.selector) || input.fallback || "";
+}
+
+/** The ARN to assume, "" to run as the agent: the override, else the provider's, else the default. */
+export function resolveRoleArn(choice: RoleChoice): string {
+  return choice.override || arnForSelector(choice.attributes, choice.selector) || choice.fallback || "";
 }
 
 /** The IAM provider's attributes over the request's NRN and dimensions, as the platform resolves them; {} when there is none or the lookup fails. */
@@ -63,12 +60,24 @@ export async function iamAttributesOf(context: Context, request: ParameterReques
   }
 }
 
+/** What STS answers an AssumeRole, the fields read here. */
+interface AssumeRoleAnswer {
+  Credentials?: {
+    AccessKeyId?: string;
+    SecretAccessKey?: string;
+    SessionToken?: string;
+    Expiration?: Date | string;
+  };
+}
+
 interface Assumed {
   credentials: AwsCredentialIdentity;
   expiresAt: number;
 }
 
+/** How long before its expiry an assumed role is asked for again. */
 const REFRESH_MARGIN_MS = 60_000;
+/** What an assumed role is taken to last when STS says nothing: the SDK's hour, less the margin. */
 const DEFAULT_LIFETIME_MS = 3_540_000;
 
 /** Assumed roles' credentials, one STS call per role until a minute before they expire. */
@@ -77,7 +86,6 @@ export class AssumedRoles {
 
   constructor(
     private readonly sts: (region: string) => Sender,
-    private readonly assumeRole: new (input: { RoleArn: string; RoleSessionName: string }) => unknown,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -88,16 +96,11 @@ export class AssumedRoles {
       return known.credentials;
     }
     log.info(`Assuming role ${arn}`);
-    let answer: {
-      Credentials?: {
-        AccessKeyId?: string;
-        SecretAccessKey?: string;
-        SessionToken?: string;
-        Expiration?: Date | string;
-      };
-    };
+    let answer: AssumeRoleAnswer;
     try {
-      answer = await this.sts(region).send(new this.assumeRole({ RoleArn: arn, RoleSessionName: sessionName }));
+      answer = await this.sts(region).send<AssumeRoleAnswer>(
+        new AssumeRoleCommand({ RoleArn: arn, RoleSessionName: sessionName }),
+      );
     } catch (error) {
       throw new Failure("ASSUME_ROLE_FAILED", {
         what: `sts:AssumeRole failed for ${arn}`,

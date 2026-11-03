@@ -3,9 +3,6 @@ import { forgetProviders } from "../src/platform/providers";
 import { AssumedRoles, arnForSelector, awsAccess, resolveRoleArn, type RoleSelection } from "../src/aws/role";
 import { fakeContext, fakeSender, requestFor } from "./support";
 
-class AssumeRole {
-  constructor(readonly input: { RoleArn: string; RoleSessionName: string }) {}
-}
 const SELECTION: RoleSelection = {
   selector: "secret_manager",
   overrideVariable: "OVERRIDE",
@@ -38,7 +35,7 @@ describe("assumed credentials", () => {
   test("are asked of STS once and kept until a minute before they expire", async () => {
     let now = Date.parse("2026-11-02T10:00:00Z");
     const { sender, sent } = fakeSender({
-      AssumeRole: () => ({
+      AssumeRoleCommand: () => ({
         Credentials: {
           AccessKeyId: "AK",
           SecretAccessKey: "SK",
@@ -49,7 +46,6 @@ describe("assumed credentials", () => {
     });
     const roles = new AssumedRoles(
       () => sender,
-      AssumeRole as never,
       () => now,
     );
     const { context } = fakeContext();
@@ -69,19 +65,17 @@ describe("assumed credentials", () => {
     const refused = new AssumedRoles(
       () =>
         fakeSender({
-          AssumeRole: () => {
+          AssumeRoleCommand: () => {
             throw new Error("AccessDenied");
           },
         }).sender,
-      AssumeRole as never,
     );
     await expect(refused.credentialsFor("arn:x", "s", "r", context.log)).rejects.toMatchObject({
       code: "ASSUME_ROLE_FAILED",
       message: expect.stringContaining("AccessDenied"),
     });
     const partial = new AssumedRoles(
-      () => fakeSender({ AssumeRole: () => ({ Credentials: { AccessKeyId: "AK" } }) }).sender,
-      AssumeRole as never,
+      () => fakeSender({ AssumeRoleCommand: () => ({ Credentials: { AccessKeyId: "AK" } }) }).sender,
     );
     await expect(partial.credentialsFor("arn:x", "s", "r", context.log)).rejects.toMatchObject({
       code: "ASSUME_ROLE_FAILED",
@@ -94,7 +88,7 @@ describe("the access of an operation", () => {
   beforeEach(forgetProviders);
 
   test("needs the region, runs as the agent when nothing names a role, and asks the IAM provider at the request's NRN", async () => {
-    const roles = new AssumedRoles(() => fakeSender({}).sender, AssumeRole as never);
+    const roles = new AssumedRoles(() => fakeSender({}).sender);
     const request = requestFor("aws-secrets-manager");
     await expect(
       awsAccess({ context: fakeContext().context, request, env: {}, selection: SELECTION, roles }),
@@ -111,9 +105,9 @@ describe("the access of an operation", () => {
 
   test("assumes the role the IAM provider names, with the scope in the session name", async () => {
     const { sender, sent } = fakeSender({
-      AssumeRole: () => ({ Credentials: { AccessKeyId: "AK", SecretAccessKey: "SK", SessionToken: "ST" } }),
+      AssumeRoleCommand: () => ({ Credentials: { AccessKeyId: "AK", SecretAccessKey: "SK", SessionToken: "ST" } }),
     });
-    const roles = new AssumedRoles(() => sender, AssumeRole as never);
+    const roles = new AssumedRoles(() => sender);
     const request = requestFor("aws-secrets-manager", {
       value_entities: { organization: "1", account: "2", namespace: "3", application: "4", scope: "5" },
       value_dimensions: { environment: "prod" },

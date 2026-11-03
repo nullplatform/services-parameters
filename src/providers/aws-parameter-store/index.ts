@@ -15,8 +15,15 @@ import {
   type ParameterTier,
 } from "@aws-sdk/client-ssm";
 import type { Context } from "@nullplatform/plugin";
-import { assumedRolesOf, clientOptions, realAwsClients, type AwsClients } from "../../aws/clients";
-import { awsAccess, type AwsAccess, type RoleSelection, type Sender } from "../../aws/role";
+import {
+  clientOptions,
+  errorNameOf,
+  realAwsClients,
+  type AwsAccess,
+  type AwsClients,
+  type Sender,
+} from "../../aws/clients";
+import { AssumedRoles, awsAccess, type RoleSelection } from "../../aws/role";
 import { handleOf, type ParameterRequest } from "../../context";
 import { Failure, messageOf } from "../../failure";
 import { canonicalPath } from "../../naming";
@@ -48,14 +55,23 @@ export interface ParameterStoreOptions {
 /** SSM path segments allow `[A-Za-z0-9._-]`: the `=` that binds an entity becomes `_`; the handle keeps the canonical form. */
 export const parameterNameOf = (path: string): string => `${NAME_PREFIX}${path.replace(/=/g, "_")}`;
 
-const errorName = (error: unknown): string => (error instanceof Error ? error.name : "");
-
 /** How many parameters one GetParameters reads. */
 export const BATCH_SIZE = 10;
 
+/** The name SSM reads a parameter by: `<name>:<version>` when the handle names a version. */
+const selectorOf = (name: string, version: string): string => (version ? `${name}:${version}` : name);
+
+/** What Parameter Store answers, the fields read here. */
+interface PutParameterAnswer {
+  Version?: number;
+}
+
+interface GetParameterAnswer {
+  Parameter?: { Value?: string };
+}
+
 interface BatchAnswer {
   Parameters?: Array<{ Name?: string; Version?: number; Value?: string }>;
-  InvalidParameters?: string[];
 }
 
 class ParameterStoreSession implements Session {
@@ -71,9 +87,9 @@ class ParameterStoreSession implements Session {
     const path = canonicalPath(request);
     const name = parameterNameOf(path);
     const type = request.kind === "secret" ? "SecureString" : "String";
-    let result: { Version?: number };
+    let result: PutParameterAnswer;
     try {
-      result = await this.ssm.send(
+      result = await this.ssm.send<PutParameterAnswer>(
         new PutParameterCommand({
           Name: name,
           Value: request.value,
@@ -107,13 +123,13 @@ class ParameterStoreSession implements Session {
   async retrieve(request: ParameterRequest) {
     const name = parameterNameOf(request.externalId.path);
     const version = request.externalId.version;
-    let answer: { Parameter?: { Value?: string } };
+    let answer: GetParameterAnswer;
     try {
-      answer = await this.ssm.send(
-        new GetParameterCommand({ Name: version ? `${name}:${version}` : name, WithDecryption: true }),
+      answer = await this.ssm.send<GetParameterAnswer>(
+        new GetParameterCommand({ Name: selectorOf(name, version), WithDecryption: true }),
       );
     } catch (error) {
-      if (errorName(error) === "ParameterNotFound" || errorName(error) === "ParameterVersionNotFound") {
+      if (errorNameOf(error) === "ParameterNotFound" || errorNameOf(error) === "ParameterVersionNotFound") {
         throw new Failure("NOT_FOUND", {
           what: `Parameter '${name}' not found in AWS Parameter Store`,
           causes: [
@@ -144,33 +160,29 @@ class ParameterStoreSession implements Session {
   /** A batch reads up to BATCH_SIZE parameters per GetParameters, each at the version its handle names; one the call could not read, or answered at another version, is read alone, and one that still fails is left out. */
   async retrieveBatch(requests: ParameterRequest[]): Promise<RetrievedBatch> {
     const byName = new Map(requests.map((request) => [parameterNameOf(request.externalId.path), request]));
-    const selectorOf = (request: ParameterRequest): string =>
-      request.externalId.version
-        ? `${parameterNameOf(request.externalId.path)}:${request.externalId.version}`
-        : parameterNameOf(request.externalId.path);
     const values: RetrievedBatch["values"] = [];
     const alone: ParameterRequest[] = [];
     await Promise.all(
-      chunks([...byName.values()], BATCH_SIZE).map(async (group) => {
+      chunks([...byName], BATCH_SIZE).map(async (group) => {
+        const names = group.map(([name, request]) => selectorOf(name, request.externalId.version));
         let answer: BatchAnswer;
         try {
-          answer = await this.ssm.send(
-            new GetParametersCommand({ Names: group.map(selectorOf), WithDecryption: true }),
-          );
+          answer = await this.ssm.send<BatchAnswer>(new GetParametersCommand({ Names: names, WithDecryption: true }));
         } catch (error) {
           this.context.log.warn(
-            `batch read of ${group.length} parameters failed, reading them one by one: ${messageOf(error)}`,
+            `batch read of ${names.length} parameters failed, reading them one by one: ${messageOf(error)}`,
           );
-          alone.push(...group);
+          alone.push(...group.map(([, request]) => request));
           return;
         }
         const read = new Set<string>();
         for (const parameter of answer.Parameters ?? []) {
-          const request = parameter.Name === undefined ? undefined : byName.get(parameter.Name);
+          const name = parameter.Name ?? "";
+          const request = byName.get(name);
           if (!request) {
             continue;
           }
-          read.add(parameter.Name as string);
+          read.add(name);
           if (request.externalId.version && String(parameter.Version ?? "") !== request.externalId.version) {
             alone.push(request);
             continue;
@@ -180,7 +192,7 @@ class ParameterStoreSession implements Session {
             value: parameter.Value ?? "",
           });
         }
-        alone.push(...group.filter((request) => !read.has(parameterNameOf(request.externalId.path))));
+        alone.push(...group.filter(([name]) => !read.has(name)).map(([, request]) => request));
       }),
     );
     values.push(...(await retrieveEach(this, alone, this.context.log)).values);
@@ -192,7 +204,7 @@ class ParameterStoreSession implements Session {
     try {
       await this.ssm.send(new DeleteParameterCommand({ Name: name }));
     } catch (error) {
-      if (errorName(error) !== "ParameterNotFound") {
+      if (errorNameOf(error) !== "ParameterNotFound") {
         throw new Failure("DELETE_FAILED", {
           what: `Failed to delete parameter '${name}' in AWS Parameter Store`,
           causes: [
@@ -212,7 +224,7 @@ class ParameterStoreSession implements Session {
 export function awsParameterStore(options: ParameterStoreOptions = {}): Provider {
   const clients = options.clients ?? { ...realAwsClients, ssm: (access) => new SSMClient(clientOptions(access)) };
   const env = options.env ?? process.env;
-  const roles = assumedRolesOf(clients);
+  const roles = new AssumedRoles(clients.sts);
   return {
     slug: SLUG,
     async open(request, context) {

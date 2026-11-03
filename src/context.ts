@@ -9,6 +9,7 @@
 
 import type { Payload } from "@nullplatform/plugin";
 import { Failure } from "./failure";
+import { record, text, texts } from "./json";
 
 export type Kind = "secret" | "parameter" | "";
 
@@ -48,15 +49,8 @@ export function externalIdOf(handle: string): ExternalId {
 /** `external_id` as store returns it: the path, and the version after `#` when the backend gave one. */
 export const handleOf = (path: string, version: string): string => (version ? `${path}#${version}` : path);
 
-const text = (value: unknown): string => (value === null || value === undefined ? "" : String(value));
-const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-const texts = (value: unknown): Record<string, string> =>
-  Object.fromEntries(
-    Object.entries(record(value))
-      .filter(([, item]) => item !== null && item !== undefined)
-      .map(([key, item]) => [key, String(item)]),
-  );
+/** What the payload's `secret` flag says: a secret, a plain parameter, or nothing when the flag is missing. */
+const kindOf = (secret: unknown): Kind => (secret === true ? "secret" : secret === false ? "parameter" : "");
 
 /** The request a payload carries; a payload naming no provider is refused. */
 export function requestOf(payload: Payload): ParameterRequest {
@@ -69,9 +63,8 @@ export function requestOf(payload: Payload): ParameterRequest {
       fixes: ["Verify the parameter has a provider configured"],
     });
   }
-  const secret = payload.secret;
   return {
-    kind: secret === true ? "secret" : secret === false ? "parameter" : "",
+    kind: kindOf(payload.secret),
     parameterId: text(payload.parameter_id),
     value: text(payload.value),
     name: text(payload.parameter_name),
@@ -97,7 +90,7 @@ export function batchRequestsOf(payload: Payload): ParameterRequest[] {
   }
   return values.map((value) => ({
     ...shared,
-    kind: value.secret === true ? "secret" : value.secret === false ? "parameter" : "",
+    kind: kindOf(value.secret),
     name: text(value.parameter_name),
     encoding: text(value.encoding),
     externalId: externalIdOf(text(value.external_id)),

@@ -3,7 +3,7 @@ import { externalIdOf, handleOf, nrnOf, requestOf } from "../src/context";
 import { Failure, troubleMessage } from "../src/failure";
 import { canonicalPath, sanitizeForPath } from "../src/naming";
 import { settingOf } from "../src/settings";
-import { CANONICAL, payloadFor, requestFor } from "./support";
+import { CANONICAL, requestFor } from "./support";
 
 describe("the request", () => {
   test("reads the parameter, its handle split at the version, the provider and its attributes", () => {

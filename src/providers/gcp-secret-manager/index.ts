@@ -12,7 +12,8 @@
 import { GoogleAuth } from "google-auth-library";
 import type { Context } from "@nullplatform/plugin";
 import { handleOf, type ParameterRequest } from "../../context";
-import { Failure } from "../../failure";
+import { Failure, messageOf } from "../../failure";
+import { parsedObject, text, valueAt, type JsonObject } from "../../json";
 import { canonicalPath } from "../../naming";
 import { DONE, retrieveEach, type Provider, type RetrievedBatch, type Session } from "../../provider";
 import { settingOf } from "../../settings";
@@ -44,7 +45,7 @@ export const validPrefix = (prefix: string): boolean => /^[A-Za-z0-9_-]+$/.test(
 
 interface Answer {
   status: number;
-  body: Record<string, any>;
+  body: JsonObject;
 }
 
 const labelValue = (value: string): string =>
@@ -98,20 +99,13 @@ class SecretManagerSession implements Session {
     } catch {
       return { status: 0, body: {} };
     }
-    const text = await response.text();
-    let parsed: Record<string, any> = {};
-    try {
-      parsed = text ? (JSON.parse(text) as Record<string, any>) : {};
-    } catch {
-      parsed = {};
-    }
-    return { status: response.status, body: parsed };
+    return { status: response.status, body: parsedObject(await response.text()) };
   }
 
   private underlying(answer: Answer): string {
     return answer.status === 0
       ? "could not connect to secretmanager.googleapis.com: no HTTP response (DNS or network egress)"
-      : String(answer.body?.error?.message ?? "unknown error");
+      : text(valueAt(answer.body, "error.message")) || "unknown error";
   }
 
   private get secretsUrl(): string {
@@ -173,7 +167,7 @@ class SecretManagerSession implements Session {
         underlying: this.underlying(added),
       });
     }
-    const versionName = String(added.body.name ?? "");
+    const versionName = text(added.body.name);
     return {
       external_id: handleOf(path, versionName.split("/").pop() ?? ""),
       metadata: { secret_id: secretId, version_name: versionName, project_id: this.projectId },
@@ -196,7 +190,7 @@ class SecretManagerSession implements Session {
     }
     const answer = await this.call("GET", `${this.secretsUrl}/${secretId}/versions/${version}:access`);
     if (answer.status === 200) {
-      const data = answer.body?.payload?.data;
+      const data = valueAt(answer.body, "payload.data");
       if (typeof data !== "string") {
         throw new Failure("RETRIEVE_FAILED", {
           what: `Secret Manager returned no payload for '${secretId}' (version ${version})`,
@@ -283,7 +277,7 @@ export function workloadToken(env: Record<string, string | undefined>): () => Pr
           "Run the agent on GKE with Workload Identity and grant its KSA principal access (see docs/iam-policy.md)",
           "Outside GCP, export GCP_ACCESS_TOKEN in the agent environment",
         ],
-        underlying: error instanceof Error ? error.message : String(error),
+        underlying: messageOf(error),
       });
     }
     if (!token) {

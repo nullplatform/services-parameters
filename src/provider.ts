@@ -7,7 +7,8 @@
  */
 
 import type { Context, Logger } from "@nullplatform/plugin";
-import type { ParameterRequest } from "./context";
+import { handleOf, type ParameterRequest } from "./context";
+import { messageOf } from "./failure";
 
 export interface Stored {
   external_id: string;
@@ -52,10 +53,6 @@ export const chunks = <Item>(items: Item[], size: number): Item[][] =>
 /** How many single reads a batch runs at once in a backend without a batch read. */
 export const BATCH_CONCURRENCY = 10;
 
-/** The handle a request carries, as the platform spelled it. */
-const handleOfRequest = (request: ParameterRequest): string =>
-  request.externalId.version ? `${request.externalId.path}#${request.externalId.version}` : request.externalId.path;
-
 /** The values of `requests` read one by one through `session.retrieve`, `limit` at a time; one that fails is logged and left out, and the platform retrieves it on its own. */
 export async function retrieveEach(
   session: Pick<Session, "retrieve">,
@@ -68,11 +65,10 @@ export async function retrieveEach(
   const read = async (): Promise<void> => {
     for (let request = pending.shift(); request; request = pending.shift()) {
       try {
-        values.push({ external_id: handleOfRequest(request), value: (await session.retrieve(request)).value });
+        const { value } = await session.retrieve(request);
+        values.push({ external_id: handleOf(request.externalId.path, request.externalId.version), value });
       } catch (error) {
-        log.warn(
-          `'${request.externalId.path}' left out of the batch: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        log.warn(`'${request.externalId.path}' left out of the batch: ${messageOf(error)}`);
       }
     }
   };

@@ -65,7 +65,7 @@ describe("the provider of a category over an NRN", () => {
         attributes: { iam_role_arns: { arns: [{ selector: "parameter_store", arn: "arn:dev" }] } },
       },
     ]);
-    const provider = await providerOf(api as Api, "identity-access-control", APPLICATION, { environment: "prod" });
+    const provider = await providerOf(api, "identity-access-control", APPLICATION, { environment: "prod" });
     expect(provider?.attributes).toEqual({
       iam_role_arns: { arns: [{ selector: "parameter_store", arn: "arn:application" }] },
     });
@@ -79,20 +79,18 @@ describe("the provider of a category over an NRN", () => {
 
   test("sends no dimensions query for a request without them, and answers none when nothing is configured", async () => {
     const { api, calls } = fakeApi([{ nrn: ACCOUNT, attributes: { server: { url: "http://prometheus" } } }]);
-    const provider = await providerOf(api as Api, "metrics", APPLICATION, {});
+    const provider = await providerOf(api, "metrics", APPLICATION, {});
     expect(provider?.attributes).toEqual({ server: { url: "http://prometheus" } });
     expect(calls[2]).toBe(`GET /provider {"nrn":"${APPLICATION}","specification_id":"s1","show_ascendants":true}`);
     const none = fakeApi([]);
     forgetProviders();
-    expect(await providerOf(none.api as Api, "metrics", APPLICATION, {})).toBeUndefined();
+    expect(await providerOf(none.api, "metrics", APPLICATION, {})).toBeUndefined();
     expect(none.calls).toEqual(['GET /category {"slug":"metrics"}']);
   });
 
   test("answers none when the category has specifications but no provider fits", async () => {
     const { api } = fakeApi([{ nrn: ACCOUNT, dimensions: { environment: "dev" }, attributes: {} }]);
-    expect(
-      await providerOf(api as Api, "identity-access-control", APPLICATION, { environment: "prod" }),
-    ).toBeUndefined();
+    expect(await providerOf(api, "identity-access-control", APPLICATION, { environment: "prod" })).toBeUndefined();
     const empty = {
       ...(fakeApi([{ nrn: ACCOUNT }]).api as Record<string, unknown>),
       provider_specification: { get: async () => ({ results: [] }) },
@@ -104,13 +102,13 @@ describe("the provider of a category over an NRN", () => {
     let clock = 1_000;
     const now = () => clock;
     const { api, calls } = fakeApi([{ nrn: ACCOUNT, attributes: { server: { url: "http://prometheus" } } }]);
-    await providerOf(api as Api, "metrics", APPLICATION, {}, now);
-    await providerOf(api as Api, "metrics", APPLICATION, {}, now);
+    await providerOf(api, "metrics", APPLICATION, {}, now);
+    await providerOf(api, "metrics", APPLICATION, {}, now);
     expect(calls.length).toBe(4);
-    await providerOf(api as Api, "metrics", APPLICATION, { environment: "prod" }, now);
+    await providerOf(api, "metrics", APPLICATION, { environment: "prod" }, now);
     expect(calls.length).toBe(8);
     clock += REMEMBER_MS;
-    await providerOf(api as Api, "metrics", APPLICATION, {}, now);
+    await providerOf(api, "metrics", APPLICATION, {}, now);
     expect(calls.length).toBe(12);
     const failing = {
       category: {
