@@ -1,0 +1,46 @@
+#!/bin/bash
+# shellcheck disable=SC2154 # http_code and resp are set by gsm_request (api)
+set -euo pipefail
+
+# Deletes a secret (and every version it holds) from GCP Secret Manager via the
+# REST API. Idempotent: a missing secret is success. Secret Manager has no
+# soft-delete, so there is no purge step — deletion is immediate and final.
+#
+# The secret id is derived from EXTERNAL_ID_PATH with the same mapping store
+# used (naming/gsm_secret_id); the version suffix is ignored.
+#
+# Required env: EXTERNAL_ID_PATH, GSM_PROJECT_ID, GSM_API_URL, GSM_NAME_PREFIX,
+#               GCP_ACCESS_TOKEN
+
+source "$(dirname "${BASH_SOURCE[0]}")/naming"
+source "$(dirname "${BASH_SOURCE[0]}")/api"
+
+SECRET_ID=$(gsm_secret_id "$EXTERNAL_ID_PATH")
+
+gsm_request DELETE "$GSM_API_URL/projects/$GSM_PROJECT_ID/secrets/$SECRET_ID"
+
+if [ "$http_code" = "200" ]; then
+  echo '{
+  "success": true
+}'
+elif [ "$http_code" = "404" ]; then
+  log debug "Secret '$SECRET_ID' does not exist, treating delete as idempotent success"
+  echo '{
+  "success": true
+}'
+else
+  log error "❌ Failed to delete secret '$SECRET_ID' from GCP project '$GSM_PROJECT_ID' (HTTP $http_code)"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The agent identity lacks secretmanager.secrets.delete on the secret"
+  log error "   • The access token expired"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Grant the agent principal access as in docs/iam-policy.md"
+  if [ "$http_code" = "000" ]; then
+    log error "Underlying error: could not connect to secretmanager.googleapis.com — no HTTP response (DNS or network egress)"
+  else
+    log error "Underlying error: $(echo "$resp" | jq -r '.error.message // "unknown error"' 2>/dev/null | head -1)"
+  fi
+  exit 1
+fi

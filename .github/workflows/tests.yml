@@ -1,8 +1,8 @@
 name: tests
 
-# shellcheck and the trivy IaC scan run in their own workflows (shellcheck.yml,
-# trivy.yml); this one lints and validates the provider install specs and runs
-# the worker's tests and type-check.
+# shellcheck and the trivy scans run in their own workflows (shellcheck.yml,
+# trivy.yml); this one lints and validates the provider install specs, checks
+# and tests the worker, and tests the bash package.
 
 on:
   pull_request:
@@ -50,7 +50,39 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Type-check
-        run: bunx tsc --noEmit -p .
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Check the formatting
+        run: bun run format:check
 
       - name: Run the tests
         run: bun test
+
+  bash:
+    name: Bash package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install bats and jq
+        run: sudo apt-get update && sudo apt-get install -y bats jq
+
+      - name: Install gomplate
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/gomplate \
+            https://github.com/hairyhenderson/gomplate/releases/download/v4.3.3/gomplate_linux-amd64
+          sudo chmod +x /usr/local/bin/gomplate
+          gomplate --version
+
+      - name: Run the BATS tests
+        run: make test-bash
+
+      # The release publishes this image beside the worker's; a Dockerfile that
+      # no longer builds would otherwise fail there, after the merge.
+      - name: Build the image
+        run: docker build parameters

@@ -15,6 +15,18 @@ updates:
       - "dependencies"
       - "base-image"
 
+  # The bash package's image: its worker-bridge base, pinned the same way.
+  - package-ecosystem: "docker"
+    directory: "/parameters"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "base-image"
+
   # Keeps the pinned refs of the shared reusable workflows current; a major arrives on its own PR.
   - package-ecosystem: "github-actions"
     directory: "/"

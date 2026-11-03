@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Maps the canonical external_id path to a GCP Secret Manager secret id.
+#
+# Secret ids allow only [A-Za-z0-9_-] (max 255 chars), so the canonical form
+# (organization=<slug>-<id>/account=<slug>-<id>/.../<name>-<id>) is flattened
+# deterministically: each "/" becomes "__" (keeps the hierarchy visible in the
+# console), each "=" becomes "-", and anything else outside the charset becomes
+# "-". The configured prefix is joined the same way, so every secret this
+# provider owns starts with "<prefix>__" — the anchor of the IAM condition.
+#
+# Sourced by store/retrieve/delete, so the three always agree on the name.
+#
+# Requires: GSM_NAME_PREFIX (exported by setup)
+
+# shellcheck disable=SC2034 # read by store, which sources this file
+GSM_SECRET_ID_MAX_LENGTH=255
+
+gsm_secret_id() {
+  local path="$1"
+  path="${path//\//__}"
+  path="${path//=/-}"
+  path="${path//[^A-Za-z0-9_-]/-}"
+  echo "${GSM_NAME_PREFIX}__${path}"
+}

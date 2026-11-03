@@ -1,0 +1,60 @@
+#!/bin/bash
+
+# Get configuration value with priority: provider config > environment variable > default.
+# Usage: get_config_value [--provider "jq.path"] ... [--env ENV_VAR] ... [--default "value"]
+#
+# Reads provider config from $PROVIDER_CONFIG — a JSON string scoped to the
+# currently active provider. It is populated by providers/<name>/fetch_configuration
+# (each provider owns its own config-fetching mechanism). The shape of
+# PROVIDER_CONFIG is defined by each provider.
+#
+# Example (inside providers/hashicorp-vault/setup):
+#   VAULT_ADDR=$(get_config_value --env VAULT_ADDR --provider '.address')
+#   VAULT_TOKEN=$(get_config_value --env VAULT_TOKEN --provider '.token')
+
+get_config_value() {
+  local default_value=""
+  local -a providers=()
+  local -a env_vars=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --env)      env_vars+=("${2:-}");   shift 2 ;;
+      --provider) providers+=("${2:-}");  shift 2 ;;
+      --default)  default_value="${2:-}"; shift 2 ;;
+      *)          shift ;;
+    esac
+  done
+
+  # Priority 1: provider config
+  if [ "${#providers[@]}" -gt 0 ]; then
+    for jq_path in "${providers[@]}"; do
+      if [[ -n "$jq_path" && -n "${PROVIDER_CONFIG:-}" ]]; then
+        local v
+        v=$(echo "$PROVIDER_CONFIG" | jq -r "$jq_path // empty" 2>/dev/null || true)
+        if [[ -n "$v" && "$v" != "null" ]]; then
+          echo "$v"
+          return 0
+        fi
+      fi
+    done
+  fi
+
+  # Priority 2: env vars
+  if [ "${#env_vars[@]}" -gt 0 ]; then
+    for env_var in "${env_vars[@]}"; do
+      if [[ -n "$env_var" && -n "${!env_var:-}" ]]; then
+        echo "${!env_var}"
+        return 0
+      fi
+    done
+  fi
+
+  # Priority 3: default
+  if [[ -n "$default_value" ]]; then
+    echo "$default_value"
+    return 0
+  fi
+
+  echo ""
+}

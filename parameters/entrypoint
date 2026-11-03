@@ -1,0 +1,62 @@
+#!/bin/bash
+set -euo pipefail
+
+# Entry point for the parameters package.
+# - Cleans NP_ACTION_CONTEXT (strips surrounding single quotes some runners add)
+# - Exports CONTEXT scoped to the .notification body (what every script reads)
+# - Resolves the workflow file from the action name (parameter:<action>)
+# - Honors OVERRIDES_PATH for consumer-side workflow overrides
+#
+# Kind discrimination (secret vs parameter) is NOT done here. It's derived at
+# the script layer: build_context reads $CONTEXT.secret and exports
+# PARAMETER_KIND; providers that branch on it (e.g. aws-parameter-store choosing
+# String vs SecureString) read PARAMETER_KIND directly.
+
+ENTRYPOINT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$ENTRYPOINT_DIR/utils/log" ] && source "$ENTRYPOINT_DIR/utils/log"
+
+if [ -z "${NP_ACTION_CONTEXT:-}" ]; then
+  echo "❌ NP_ACTION_CONTEXT is not set" >&2
+  exit 1
+fi
+
+type -t log >/dev/null 2>&1 && log debug "🚀 entrypoint start (pid=$$)"
+
+CLEAN_CONTEXT=$(echo "$NP_ACTION_CONTEXT" | sed "s/^'//;s/'$//")
+export NP_ACTION_CONTEXT="$CLEAN_CONTEXT"
+export CONTEXT=$(echo "$CLEAN_CONTEXT" | jq '.notification')
+
+NOTIFICATION_ACTION=$(echo "$CONTEXT" | jq -r '.action // empty')
+IFS=':' read -ra ACTION_PARTS <<< "$NOTIFICATION_ACTION"
+ACTION_TO_EXECUTE="${ACTION_PARTS[1]:-}"
+
+if [ -z "$ACTION_TO_EXECUTE" ]; then
+  echo "❌ CONTEXT.action is missing the action part (got '$NOTIFICATION_ACTION', expected 'parameter:<action>')" >&2
+  exit 1
+fi
+
+SERVICE_PATH=$ENTRYPOINT_DIR
+
+export SERVICE_PATH
+
+WORKFLOW_PATH="$ENTRYPOINT_DIR/workflows/$ACTION_TO_EXECUTE.yaml"
+if [ ! -f "$WORKFLOW_PATH" ]; then
+  echo "❌ No workflow found at $WORKFLOW_PATH" >&2
+  exit 1
+fi
+
+CMD="np service workflow exec --no-output --workflow $WORKFLOW_PATH"
+
+if [ -n "${OVERRIDES_PATH:-}" ]; then
+  IFS=',' read -ra OVERRIDE_PATHS <<< "$OVERRIDES_PATH"
+  for path in "${OVERRIDE_PATHS[@]}"; do
+    path=$(echo "$path" | xargs)
+    [ -z "$path" ] && continue
+    override_yaml="$path/parameters/workflows/$ACTION_TO_EXECUTE.yaml"
+    [ -f "$override_yaml" ] && CMD="$CMD --overrides $override_yaml"
+  done
+fi
+
+WF_RC=0
+eval $CMD || WF_RC=$?
+exit $WF_RC

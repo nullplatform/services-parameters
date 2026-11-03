@@ -1,0 +1,45 @@
+#!/bin/bash
+set -euo pipefail
+
+# Deletes a parameter from AWS Parameter Store.
+#
+# Idempotency semantics:
+#   - Successful delete → success
+#   - ParameterNotFound → success (already gone)
+#   - Any other error → exit 1 with troubleshooting
+#
+# Required env: EXTERNAL_ID, AWS_REGION, PS_NAME_PREFIX
+
+# SSM path components only accept [A-Za-z0-9._-]; `=` is replaced with `_`
+# (same transformation as store).
+PARAM_NAME="${PS_NAME_PREFIX}${EXTERNAL_ID_PATH//=/_}"
+
+err_file=$(mktemp)
+if aws ssm delete-parameter \
+        --region "$AWS_REGION" \
+        --name "$PARAM_NAME" >/dev/null 2>"$err_file"; then
+  rm -f "$err_file"
+  echo '{
+  "success": true
+}'
+else
+  err=$(cat "$err_file")
+  rm -f "$err_file"
+  if echo "$err" | grep -q "ParameterNotFound"; then
+    log debug "Parameter '$PARAM_NAME' does not exist, treating delete as success"
+    echo '{
+  "success": true
+}'
+  else
+    log error "❌ Failed to delete parameter '$PARAM_NAME' in AWS Parameter Store"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • IAM principal lacks ssm:DeleteParameter on this resource"
+    log error "   • Region '$AWS_REGION' unreachable or wrong"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify identity: aws sts get-caller-identity --region $AWS_REGION"
+    log error "Underlying error: $err"
+    exit 1
+  fi
+fi

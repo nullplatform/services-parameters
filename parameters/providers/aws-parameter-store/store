@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+# Stores a parameter in AWS SSM Parameter Store.
+#
+# Versioning model:
+#   nullplatform parameter values are immutable. Each update is a new VERSION.
+#   AWS Parameter Store retains versions automatically inside the same parameter
+#   name. We use `--overwrite` so the first store creates the parameter and
+#   subsequent stores append a new version. Version 1 is created on first store;
+#   each subsequent store increments the version counter.
+#
+# Type=SecureString for kind=secret, Type=String for kind=parameter.
+#
+# Required env: PARAMETER_KIND, PARAMETER_VALUE, AWS_REGION, PS_NAME_PREFIX, PS_TIER
+# Optional env: PS_KMS_KEY_ID
+
+source "$PARAMETERS_ROOT/utils/build_external_id"
+build_external_id
+
+# SSM Parameter Store path components only accept [A-Za-z0-9._-]. The canonical
+# external_id uses `=` to bind entities (organization=acme-1, ...); replace
+# with `_` to satisfy SSM. EXTERNAL_ID itself (returned to the platform) keeps
+# the canonical form — retrieve/delete apply the same transformation.
+PARAM_NAME="${PS_NAME_PREFIX}${EXTERNAL_ID//=/_}"
+
+SSM_TYPE="String"
+[ "${PARAMETER_KIND:-}" = "secret" ] && SSM_TYPE="SecureString"
+
+put_args=(
+  --region "$AWS_REGION"
+  --name "$PARAM_NAME"
+  --value "$PARAMETER_VALUE"
+  --type "$SSM_TYPE"
+  --tier "$PS_TIER"
+  --overwrite
+)
+if [ "$SSM_TYPE" = "SecureString" ] && [ -n "${PS_KMS_KEY_ID:-}" ]; then
+  put_args+=(--key-id "$PS_KMS_KEY_ID")
+fi
+
+err_file=$(mktemp)
+if ! PUT_RESULT=$(aws ssm put-parameter "${put_args[@]}" --output json 2>"$err_file"); then
+  err=$(cat "$err_file")
+  rm -f "$err_file"
+  log error "❌ Failed to store parameter in AWS Parameter Store"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • IAM principal lacks ssm:PutParameter for $PARAM_NAME"
+  log error "   • Tier '$PS_TIER' rejects this value size (Standard caps at 4KB)"
+  if [ "$SSM_TYPE" = "SecureString" ] && [ -n "${PS_KMS_KEY_ID:-}" ]; then
+    log error "   • IAM principal lacks kms:Encrypt on $PS_KMS_KEY_ID"
+  fi
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Verify identity: aws sts get-caller-identity --region $AWS_REGION"
+  log error "   • For large values, set PS_TIER=Advanced"
+  log error "Underlying error: $err"
+  exit 1
+fi
+rm -f "$err_file"
+
+VERSION_ID=$(echo "$PUT_RESULT" | jq -r '.Version // empty')
+
+# Encode version into external_id (the canonical handle nullplatform persists).
+[ -n "$VERSION_ID" ] && EXTERNAL_ID="${EXTERNAL_ID}#${VERSION_ID}"
+
+jq -n \
+    --arg external_id "$EXTERNAL_ID" \
+    --arg parameter_name "$PARAM_NAME" \
+    --arg region "$AWS_REGION" \
+    --arg type "$SSM_TYPE" \
+    --arg tier "$PS_TIER" \
+    '{external_id: $external_id, metadata: {parameter_name: $parameter_name, region: $region, type: $type, tier: $tier}}'

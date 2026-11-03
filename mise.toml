@@ -1,26 +1,38 @@
 # ---------------------------------------------------------------------------
-# Run the worker locally as a package: `np package run` (or `mise run run`); the
-# worker serves every backend, each request names its own. `np package build --image` runs `build:image`, `np package run`
-# runs `run`. See "Run locally as a package" in the README.
+# Run the package locally: `np package run` (or `mise run run`). `np package
+# build --image` runs `build:image`, `np package run` runs `run`. See "Run
+# locally as a package" in the README.
+#
+# The image the agent spawns is the TypeScript worker (`parameters:dev`); to run
+# the bash package instead, `mise run build:bash-image` and start the run with
+# NP_WORKER_IMAGE=parameters-bash:dev.
 # ---------------------------------------------------------------------------
 
 [tasks."build:image"]
-description = "Build the worker image"
+description = "Build the worker image: every backend in one binary"
 run = 'docker build -t parameters:dev .'
 
+[tasks."build:bash-image"]
+description = "Build the bash package's image: worker-bridge + parameters/"
+run = 'docker build -t parameters-bash:dev parameters'
+
+[tasks.check]
+description = "Type-check, lint, format-check and test the worker"
+run = "bun run check"
+
 [tasks.test]
-description = "Run the tests: every provider against fakes of its backend"
+description = "Run the worker's tests: every provider against fakes of its backend"
 run = "bun test"
 
-[tasks.typecheck]
-description = "Type-check the package"
-run = "bunx tsc --noEmit -p ."
+[tasks."test:bash"]
+description = "Run the bash package's BATS tests"
+run = "bats -r parameters/tests"
 
 [tasks.describe]
 description = "Print the worker's manifest"
 run = 'bun src/main.ts --describe'
 
-# Runs the service the way production does: a controlplane-agent with the
+# Runs the package the way production does: a controlplane-agent with the
 # worker orchestrator (docker backend) that SPAWNS the worker container and
 # talks to it over gRPC/mTLS. --network host so the agent can reach the worker
 # it publishes on the host (Linux; on Docker Desktop enable host networking).
@@ -51,7 +63,7 @@ docker run --rm --name "np-$slug-agent" --network host \
   ${NP_PACKAGE_ENV_FLAGS:-} \
   -e NP_API_KEY -e NP_LOG_LEVEL="${NP_LOG_LEVEL:-INFO}" \
   -e NP_WORKER_BACKEND=docker \
-  -e NP_WORKER_IMAGE="parameters:dev" \
+  -e NP_WORKER_IMAGE="${NP_WORKER_IMAGE:-parameters:dev}" \
   -e NP_WORKER_RULES="$worker_rules" \
   "${NP_AGENT_IMAGE:-public.ecr.aws/nullplatform/controlplane-agent:latest}" \
   -runtime=host -tags=package:"$slug",local:"${NP_LOCAL_USER:-$USER}"

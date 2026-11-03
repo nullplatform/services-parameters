@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Shared HTTP helper for the Secret Manager REST API.
+#
+# The bearer token never goes on curl's argv, where any process in the pod could
+# read it from `ps` or /proc/<pid>/cmdline. It is written by a shell builtin
+# (printf, so no child process sees it either) into a mode-600 temp file that
+# curl reads with `-H @file`, and the file is removed on exit. Request bodies go
+# to curl on stdin, so the parameter value stays off argv too.
+#
+# Sourced by store/retrieve/delete.
+#
+# Requires: GCP_ACCESS_TOKEN (exported by setup), curl >= 7.55 (-H @file)
+
+GSM_AUTH_HEADER_FILE=$(mktemp)
+chmod 600 "$GSM_AUTH_HEADER_FILE"
+trap 'rm -f "$GSM_AUTH_HEADER_FILE"' EXIT
+printf 'Authorization: Bearer %s\n' "$GCP_ACCESS_TOKEN" > "$GSM_AUTH_HEADER_FILE"
+
+# gsm_request <METHOD> <URL> [BODY]
+# Sets http_code (000 when there is no HTTP response) and resp (response body).
+# shellcheck disable=SC2034 # http_code and resp are read by the caller
+gsm_request() {
+  local method="$1" url="$2" resp_file
+  resp_file=$(mktemp)
+  if [ "$#" -ge 3 ]; then
+    http_code=$(curl -s --max-time 30 -o "$resp_file" -w '%{http_code}' \
+      -X "$method" "$url" \
+      -H @"$GSM_AUTH_HEADER_FILE" \
+      -H "Content-Type: application/json" \
+      --data-binary @- <<<"$3") || http_code="000"
+  else
+    http_code=$(curl -s --max-time 30 -o "$resp_file" -w '%{http_code}' \
+      -X "$method" "$url" \
+      -H @"$GSM_AUTH_HEADER_FILE") || http_code="000"
+  fi
+  resp=$(cat "$resp_file")
+  rm -f "$resp_file"
+}

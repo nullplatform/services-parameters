@@ -1,7 +1,8 @@
-# Configuration
+# Configuration (the worker)
 
-How a worker decides it is the right one for a parameter and where each provider gets its
-settings: all from the notification, plus credentials from the environment.
+Where each provider of the worker gets its settings: all from the notification, plus
+credentials from the environment. The bash package reads the same notification and the same
+attributes; its variables are in [parameters/docs/configuration.md](../parameters/docs/configuration.md).
 
 ## What the notification carries
 
@@ -13,7 +14,8 @@ settings: all from the notification, plus credentials from the environment.
 | `secret` | whether the parameter is a secret; Parameter Store stores a SecureString for one |
 | `entities`, `value_entities` | the NRN's entities with their slugs; `value_entities` carries the scope for a scoped value |
 | `dimensions`, `value_dimensions` | the parameter's dimensions, and the value's for a scoped value |
-| **`provider.specification_slug`** | **which provider handles the parameter**; a worker refuses another provider's |
+| **`provider.specification_slug`** | **which provider handles the parameter**; a slug the image does not carry is refused |
+| `values` | on `parameter:retrieve_batch` only: the values to read, each with its `external_id`, `parameter_name`, `secret` and `encoding` |
 | **`provider.attributes`** | **that provider's configuration**, as registered in nullplatform |
 | `provider.specification_id`, `provider.id`, `provider.nrn`, `provider.dimensions` | informational; `provider.dimensions` is the platform's and is never read |
 

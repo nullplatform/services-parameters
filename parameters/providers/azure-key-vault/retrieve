@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+
+# Retrieves a secret from Azure Key Vault by external_id via the REST API.
+#
+# The AKV secret name IS the external_id (built slug-free by store, no prefix or
+# transform), so EXTERNAL_ID_PATH is used verbatim as the secret name.
+#
+# Required env: EXTERNAL_ID_PATH, EXTERNAL_ID_VERSION (set by build_context),
+#               AZ_VAULT_NAME, AZ_VAULT_URL, AZ_ACCESS_TOKEN
+
+SECRET_NAME="$EXTERNAL_ID_PATH"
+
+# A specific version is an extra path segment; without it AKV returns the latest.
+secret_path="secrets/$SECRET_NAME"
+[ -n "${EXTERNAL_ID_VERSION:-}" ] && secret_path="secrets/$SECRET_NAME/$EXTERNAL_ID_VERSION"
+
+resp_file=$(mktemp)
+http_code=$(curl -s -o "$resp_file" -w '%{http_code}' \
+  -X GET "$AZ_VAULT_URL/$secret_path?api-version=7.4" \
+  -H "Authorization: Bearer $AZ_ACCESS_TOKEN") || http_code="000"
+resp=$(cat "$resp_file")
+rm -f "$resp_file"
+
+if [ "$http_code" = "200" ]; then
+  VALUE=$(echo "$resp" | jq -r '.value')
+  jq -n --arg value "$VALUE" '{value: $value}'
+elif [ "$http_code" = "404" ]; then
+  log error "❌ Secret '$SECRET_NAME' not found in Azure Key Vault '$AZ_VAULT_NAME'"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The secret was manually deleted (and possibly purged) from AKV"
+  log error "   • The external_id is stale"
+  if [ -n "${EXTERNAL_ID_VERSION:-}" ]; then
+    log error "   • Requested version '$EXTERNAL_ID_VERSION' was purged from AKV"
+  fi
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Verify: GET $AZ_VAULT_URL/secrets/$SECRET_NAME?api-version=7.4"
+  log error "   • If genuinely missing, the parameter value needs to be re-stored"
+  exit 1
+else
+  log error "❌ Failed to retrieve secret '$SECRET_NAME' from Azure Key Vault '$AZ_VAULT_NAME' (HTTP $http_code)"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The service principal lacks Get permission on vault $AZ_VAULT_NAME"
+  log error "   • The vault firewall blocks the caller, or the token expired"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Confirm the SP has the Key Vault Secrets Officer role on the vault"
+  if [ "$http_code" = "000" ]; then
+    log error "Underlying error: could not connect to $AZ_VAULT_URL — no HTTP response (DNS, network egress, or the vault is unreachable: no route / no private endpoint from here)"
+  else
+    log error "Underlying error: $(echo "$resp" | jq -r '.error.message // "unknown error"' 2>/dev/null | head -1)"
+  fi
+  exit 1
+fi

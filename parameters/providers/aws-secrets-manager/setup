@@ -1,0 +1,32 @@
+#!/bin/bash
+set -euo pipefail
+
+# Validates AWS Secrets Manager connection config.
+#
+# AWS_REGION is injected by the agent's runtime (IRSA / instance profile /
+# service account env), not by provider config. The name prefix is hardcoded
+# to `nullplatform/` to guarantee a single invariant namespace for all platform
+# secrets — changing it would break retrieval of historical external_ids.
+#
+# Only KMS key choice is operator-configurable, via PROVIDER_CONFIG.kms_key_id.
+#
+# Exports: AWS_REGION, SM_NAME_PREFIX, SM_KMS_KEY_ID
+
+: "${AWS_REGION:?AWS_REGION must be set by the agent runtime}"
+
+# Resolve and assume the platform-configured IAM role (if any). After this,
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN are set in the
+# environment, so every subsequent aws-cli call inherits the assumed identity.
+ASSUME_ROLE_SELECTOR="secret_manager"
+ASSUME_ROLE_OVERRIDE_ENV="SECRET_MANAGER_ASSUME_ROLE_ARN"
+ASSUME_ROLE_DEFAULT_ENV="SECRET_MANAGER_ASSUME_ROLE_ARN_DEFAULT"
+ASSUME_ROLE_SESSION_PREFIX="np-secret-manager"
+source "$PARAMETERS_ROOT/utils/assume_role_step"
+
+SM_NAME_PREFIX="nullplatform/"
+
+SM_KMS_KEY_ID=$(get_config_value \
+  --provider '.setup.kms_key_id' \
+  --default '')
+
+export AWS_REGION SM_NAME_PREFIX SM_KMS_KEY_ID

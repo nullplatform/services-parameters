@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+# Unified dispatcher — delegates to the active provider's implementation for $ACTION.
+#
+# Invoked by every workflow as the second step, after build_context has resolved
+# ACTIVE_PROVIDER and exported PROVIDER_DIR. The workflow YAML supplies the
+# action via configuration:
+#
+#   configuration:
+#     ACTION: store    # or retrieve / delete / notify
+#
+# Special case: notify is OPTIONAL per provider. If the provider doesn't expose
+# a notify script, return the default success ack so the action stays a no-op
+# without forcing every provider to ship a trivial notify file.
+
+if [ "$ACTION" = "notify" ] && [ ! -f "$PROVIDER_DIR/notify" ]; then
+  echo '{"success":true}'
+  exit 0
+fi
+
+source "$PROVIDER_DIR/$ACTION"

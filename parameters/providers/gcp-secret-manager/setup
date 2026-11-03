@@ -1,0 +1,105 @@
+#!/bin/bash
+set -euo pipefail
+
+# Validates GCP Secret Manager connection config and obtains an access token.
+#
+# Auth is done with curl against the REST API — no gcloud CLI (and therefore no
+# runtime CLI install) is required. By default the token comes from the GCE/GKE
+# metadata server, i.e. the agent pod's Workload Identity: no key or secret is
+# ever handed to the agent. GCP_ACCESS_TOKEN (env only, never provider config)
+# overrides it for runs outside GCP, e.g. local testing with
+# `gcloud auth print-access-token`.
+# setup exports the token as GCP_ACCESS_TOKEN, so store/retrieve/delete call the
+# Secret Manager REST API with the Authorization header and no knowledge of how
+# the token was obtained.
+#
+# Exports: GSM_PROJECT_ID, GSM_API_URL, GSM_NAME_PREFIX, GSM_REPLICA_LOCATIONS,
+#          GCP_ACCESS_TOKEN
+
+GSM_PROJECT_ID=$(get_config_value \
+  --env GCP_SECRET_MANAGER_PROJECT_ID \
+  --provider '.setup.project_id')
+
+if [ -z "$GSM_PROJECT_ID" ]; then
+  log error "❌ GCP Secret Manager project not configured"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • GCP_SECRET_MANAGER_PROJECT_ID env var is not set"
+  log error "   • .setup.project_id is missing in the gcp-secret-manager provider config"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Set GCP_SECRET_MANAGER_PROJECT_ID=<your-project-id>"
+  log error "   • Or set .setup.project_id in the provider config attributes"
+  exit 1
+fi
+
+GSM_NAME_PREFIX=$(get_config_value \
+  --env GCP_SECRET_MANAGER_NAME_PREFIX \
+  --provider '.setup.name_prefix' \
+  --default 'nullplatform')
+
+# Secret ids allow only [A-Za-z0-9_-]; the prefix is the IAM scoping anchor, so a
+# prefix outside that charset would silently break the least-privilege condition.
+# "__" is the segment separator (see naming), so it can't appear in the prefix:
+# otherwise prefix "np" would also cover secrets of prefix "np__x".
+if [[ ! "$GSM_NAME_PREFIX" =~ ^[A-Za-z0-9_-]+$ ]] || [[ "$GSM_NAME_PREFIX" == *__* ]]; then
+  log error "❌ Invalid GCP Secret Manager name prefix '$GSM_NAME_PREFIX'"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The prefix contains characters Secret Manager does not allow in secret ids"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Use only letters, digits, '_' and '-', without '__' (default: nullplatform)"
+  exit 1
+fi
+
+# Optional user-managed replication (data residency). Empty means automatic
+# replication, chosen by Google. Comma-separated in env, array in provider config.
+GSM_REPLICA_LOCATIONS=$(get_config_value \
+  --env GCP_SECRET_MANAGER_REPLICA_LOCATIONS \
+  --provider '.setup.replica_locations | if type == "array" then join(",") else . end')
+
+GSM_API_URL="https://secretmanager.googleapis.com/v1"
+
+# Explicit token wins (sensitive → env only); otherwise ask the metadata server
+# for the Workload Identity token of the pod's Kubernetes service account.
+GCP_ACCESS_TOKEN=$(get_config_value --env GCP_ACCESS_TOKEN)
+
+if [ -z "$GCP_ACCESS_TOKEN" ]; then
+  token_file=$(mktemp)
+  http_code=$(curl -s --connect-timeout 3 --max-time 10 -o "$token_file" -w '%{http_code}' \
+    -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token") || http_code="000"
+  token_resp=$(cat "$token_file")
+  rm -f "$token_file"
+
+  if [ "$http_code" != "200" ]; then
+    log error "❌ Could not obtain a GCP access token from the metadata server (HTTP $http_code)"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • The agent is not running on GKE/GCE, so there is no metadata server"
+    log error "   • Workload Identity is not enabled on the cluster or the node pool"
+    log error "   • The agent's Kubernetes service account has no IAM access to Secret Manager"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Run the agent on GKE with Workload Identity and grant its KSA principal access (see docs/iam-policy.md)"
+    log error "   • Outside GCP, export GCP_ACCESS_TOKEN in the agent environment"
+    if [ "$http_code" = "000" ]; then
+      log error "Underlying error: could not connect to metadata.google.internal — no HTTP response"
+    else
+      log error "Underlying error: $(echo "$token_resp" | head -c 300)"
+    fi
+    exit 1
+  fi
+
+  GCP_ACCESS_TOKEN=$(echo "$token_resp" | jq -r '.access_token // empty' 2>/dev/null || true)
+  if [ -z "$GCP_ACCESS_TOKEN" ]; then
+    log error "❌ The metadata server returned no access_token"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Confirm Workload Identity is enabled on the node pool (GKE_METADATA mode)"
+    exit 1
+  fi
+fi
+
+export GSM_PROJECT_ID GSM_API_URL GSM_NAME_PREFIX GSM_REPLICA_LOCATIONS GCP_ACCESS_TOKEN

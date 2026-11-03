@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# Minimal structured logging.
+# Usage: log <level> <message>
+#   level ∈ debug | info | warn | error
+#
+# All levels route to STDERR. stdout is reserved for the JSON contract output
+# of operation scripts (store/retrieve/delete/notify). Logging on stdout would
+# corrupt the JSON parsed by the platform.
+#
+# Debug is silent unless LOG_LEVEL=debug.
+
+log() {
+  local level="${1:-info}"
+  shift || true
+  local msg="$*"
+  case "$level" in
+    debug) [ "${LOG_LEVEL:-info}" = "debug" ] && echo "$msg" >&2 || true ;;
+    info)  echo "$msg" >&2 ;;
+    warn)  echo "$msg" >&2 ;;
+    error) echo "$msg" >&2 ;;
+    *)     echo "$level $msg" >&2 ;;
+  esac
+}

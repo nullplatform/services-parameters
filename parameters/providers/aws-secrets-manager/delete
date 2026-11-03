@@ -1,0 +1,49 @@
+#!/bin/bash
+set -euo pipefail
+
+# Deletes a secret from AWS Secrets Manager.
+#
+# Idempotency semantics:
+#   - Successful delete → success
+#   - ResourceNotFoundException → success (already gone, idempotent)
+#   - Any other error → exit 1 with troubleshooting
+#
+# Uses --force-delete-without-recovery to end billing immediately and free the name.
+#
+# Required env: EXTERNAL_ID, AWS_REGION, SM_NAME_PREFIX
+
+# Delete removes ALL versions; EXTERNAL_ID_VERSION suffix (if present) is ignored.
+SECRET_NAME="${SM_NAME_PREFIX}${EXTERNAL_ID_PATH}"
+
+err_file=$(mktemp)
+if aws secretsmanager delete-secret \
+        --region "$AWS_REGION" \
+        --secret-id "$SECRET_NAME" \
+        --force-delete-without-recovery >/dev/null 2>"$err_file"; then
+  rm -f "$err_file"
+  echo '{
+  "success": true
+}'
+else
+  err=$(cat "$err_file")
+  rm -f "$err_file"
+  if echo "$err" | grep -q "ResourceNotFoundException"; then
+    log debug "Secret '$SECRET_NAME' does not exist, treating delete as success"
+    echo '{
+  "success": true
+}'
+  else
+    log error "❌ Failed to delete secret '$SECRET_NAME' in AWS Secrets Manager"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • IAM principal lacks secretsmanager:DeleteSecret on this resource"
+    log error "   • Region '$AWS_REGION' unreachable or wrong"
+    log error "   • AWS API throttling"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify identity: aws sts get-caller-identity --region $AWS_REGION"
+    log error "   • Check IAM policy: aws iam simulate-principal-policy --action-names secretsmanager:DeleteSecret"
+    log error "Underlying error: $err"
+    exit 1
+  fi
+fi

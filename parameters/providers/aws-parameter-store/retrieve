@@ -1,0 +1,62 @@
+#!/bin/bash
+set -euo pipefail
+
+# Retrieves a parameter from AWS Parameter Store by external_id.
+# Uses --with-decryption (no-op for String, decrypts SecureString).
+#
+# Semantics:
+#   - Success → return {value: "<value>"}
+#   - ParameterNotFound → return {value: "value not found"}
+#   - Any other error → exit 1 with troubleshooting
+#
+# Required env: EXTERNAL_ID, AWS_REGION, PS_NAME_PREFIX
+
+# EXTERNAL_ID_PATH and EXTERNAL_ID_VERSION are set by build_context.
+# SSM path components only accept [A-Za-z0-9._-]; `=` is replaced with `_`
+# (same transformation as store).
+PARAM_NAME="${PS_NAME_PREFIX}${EXTERNAL_ID_PATH//=/_}"
+
+# PS addresses historical versions by suffixing `:<version>` to the parameter name.
+LOOKUP_NAME="$PARAM_NAME"
+[ -n "${EXTERNAL_ID_VERSION:-}" ] && LOOKUP_NAME="${PARAM_NAME}:${EXTERNAL_ID_VERSION}"
+
+err_file=$(mktemp)
+if VALUE=$(aws ssm get-parameter \
+        --region "$AWS_REGION" \
+        --name "$LOOKUP_NAME" \
+        --with-decryption \
+        --query Parameter.Value \
+        --output text 2>"$err_file"); then
+  rm -f "$err_file"
+  jq -n --arg value "$VALUE" '{value: $value}'
+else
+  err=$(cat "$err_file")
+  rm -f "$err_file"
+  if echo "$err" | grep -q "ParameterNotFound"; then
+    log error "❌ Parameter '$PARAM_NAME' not found in AWS Parameter Store"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • The parameter was manually deleted from AWS SSM"
+    log error "   • The external_id is stale"
+    if [ -n "${EXTERNAL_ID_VERSION:-}" ]; then
+      log error "   • Requested version '$EXTERNAL_ID_VERSION' is outside Parameter Store's retention window"
+    fi
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify: aws ssm describe-parameters --filters Key=Name,Values=$PARAM_NAME --region $AWS_REGION"
+    log error "   • If genuinely missing, the parameter value needs to be re-stored"
+    exit 1
+  else
+    log error "❌ Failed to retrieve parameter '$PARAM_NAME' from AWS Parameter Store"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • IAM principal lacks ssm:GetParameter on this resource"
+    log error "   • KMS key permission missing (kms:Decrypt) for SecureString"
+    log error "   • Region '$AWS_REGION' unreachable"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify identity: aws sts get-caller-identity --region $AWS_REGION"
+    log error "Underlying error: $err"
+    exit 1
+  fi
+fi

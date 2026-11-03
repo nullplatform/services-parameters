@@ -14,65 +14,94 @@ payload), and the provider's configuration travels in that same payload — so a
 single agent can serve parameters routed to multiple backends simultaneously,
 with no per-agent configuration.
 
-The **dispatch is the worker** (`src/worker.ts`); the **backends are providers** under
-`src/providers/`, one image each.
+The package ships as two worker images built from this repository, the same
+actions and the same backends in each:
+
+| Runtime | Code | Image |
+|---|---|---|
+| **The worker**: TypeScript on bun and `@nullplatform/plugin` | `src/` | `agent-plugins/services/parameters:<version>`, `latest`, and `beta/…:test-<branch>-<sha>` from pull requests |
+| **The bash package**: scripts on the `worker-bridge` | `parameters/` | `agent-plugins/services/parameters:<version>-bash` |
+
+The worker is the runtime going forward: an action is one call to the backend's
+API through its SDK, and `parameter:retrieve_batch` reads many values in one
+call. The bash package is what ran before; it stays published for whoever pins
+it and is not extended.
 
 ## Providers
 
-| Provider | Backend |
-|---|---|
-| `aws-secrets-manager` | AWS Secrets Manager (`@aws-sdk/client-secrets-manager`) |
-| `aws-parameter-store` | AWS SSM Parameter Store (`@aws-sdk/client-ssm`) |
-| `azure-key-vault` | Azure Key Vault (`@azure/keyvault-secrets`, `@azure/identity`) |
-| `gcp-secret-manager` | Google Cloud Secret Manager (`google-auth-library`, the REST API) |
-| `hashicorp-vault` | HashiCorp Vault KV v2 (its HTTP API) |
+| Provider | Backend | Worker client | Bash tool |
+|---|---|---|---|
+| `aws-secrets-manager` | AWS Secrets Manager | `@aws-sdk/client-secrets-manager` | `aws` CLI |
+| `aws-parameter-store` | AWS SSM Parameter Store | `@aws-sdk/client-ssm` | `aws` CLI |
+| `azure-key-vault` | Azure Key Vault | `@azure/keyvault-secrets`, `@azure/identity` | REST API, `curl` |
+| `gcp-secret-manager` | Google Cloud Secret Manager | `google-auth-library`, the REST API | REST API, `curl` |
+| `hashicorp-vault` | HashiCorp Vault KV v2 | its HTTP API | its HTTP API, `curl` |
 
 ## How it runs
 
-Every backend ships in one worker image,
-`public.ecr.aws/nullplatform/agent-plugins/services/parameters`: the providers' TypeScript, on
-bun and `@nullplatform/plugin`, compiled to one binary with every backend's client (the AWS SDK,
-the Azure SDK, Google's auth library; Vault over its HTTP API). One worker serves every
-backend: each request names its provider in `provider.specification_slug`, and the worker opens
-that one. A `parameters` notification channel, of type `package-exec`, makes the agent spawn the
-worker in its own pod and hand it every `parameter:<action>` of the parameters bound to any of
-those providers. No bash, no `jq`, no CLI: an action is a call to the backend's API.
+A `parameters` notification channel of type `package-exec` makes the agent spawn
+the package's worker image in its own pod and hand it every `parameter:<action>`
+of the parameters bound to any of these providers. Each notification names its
+provider in `provider.specification_slug` and carries that provider's
+configuration in `provider.attributes`; the worker opens that provider and
+answers what the operation returns. The channel comes from the
+`parameter_storage_definition_agent_association` module in
+[tofu-modules](https://github.com/nullplatform/tofu-modules) with
+`worker_orchestrator = true`.
 
-The channel comes from the `parameter_storage_definition_agent_association` module in
-[tofu-modules](https://github.com/nullplatform/tofu-modules) with `worker_orchestrator = true`.
+Which image the agent spawns is its worker pin for the package `parameters`:
+the worker image, or the `-bash` tag of the same version. Both answer the same
+actions with the same results and store under the same names, and the handle
+nullplatform keeps (`external_id`) is the same canonical form, so an
+installation can move from one to the other.
 
 ## Repository layout
 
 ```
 .
-├── Dockerfile               # the worker image, every provider in it
-├── mise.toml                # run a provider locally as a package (np package run)
-├── Makefile                 # test targets (see Testing)
-├── testing/                 # scope-testing framework (git submodule)
-├── docs/                    # architecture, configuration, adding a provider
-├── src/
+├── Dockerfile               # the worker image: src/ compiled to one binary on alpine
+├── src/                     # the worker
 │   ├── main.ts              # the image's entry: the worker with every provider
-│   ├── worker.ts            # the routes: parameter:store / retrieve / delete / notify, and retrieve_batch (several values in one call: Secrets Manager 20 per BatchGetSecretValue, Parameter Store 10 per GetParameters, Key Vault, GCP and Vault in parallel; a backend without a batch read would answer NOT_IMPLEMENTED and the platform retrieves one by one)
+│   ├── worker.ts            # the routes: parameter:store / retrieve / delete / notify / retrieve_batch
 │   ├── context.ts           # the request a notification carries
 │   ├── naming.ts            # the canonical path every backend's name is built from
 │   ├── settings.ts          # provider attributes > environment > default
 │   ├── failure.ts           # a failure in the bash's words: causes, fixes, the backend's answer
+│   ├── json.ts              # reading a notification or a backend's answer without trusting its shape
+│   ├── platform/            # the platform's provider of a category over an NRN, as the CLI resolves it
 │   ├── aws/                 # the role to assume, its credentials kept until they expire
-│   └── providers/           # index.ts (the provider per slug) and <slug>/index.ts (each provider)
+│   └── providers/           # index.ts (every provider) and <slug>/index.ts (each one)
 ├── test/                    # one suite per provider against a fake of its client
-└── parameters/providers/<slug>/   # Tofu install specs and docs of each backend
+├── docs/                    # the worker: architecture, configuration, adding a provider
+├── parameters/              # the bash package
+│   ├── Dockerfile           # its image: worker-bridge + aws-cli + these scripts
+│   ├── entrypoint           # action router (parameter:<action> → workflow)
+│   ├── workflows/           # store / retrieve / delete / notify
+│   ├── utils/               # build_context, dispatch, assume_role*, build_external_id, ...
+│   ├── providers/<slug>/    # the backend's scripts, and the Tofu install specs & docs both runtimes share
+│   ├── tests/               # BATS unit tests (mirror the source tree)
+│   └── docs/                # the bash package: architecture, configuration, adding a provider
+├── mise.toml                # run locally as a package (np package run)
+├── Makefile                 # test targets (see Testing)
+└── testing/                 # scope-testing framework (git submodule)
 ```
 
 ## Documentation
 
-Start here for how the package works end to end:
+The worker:
 
-- [Architecture](docs/architecture.md) — layered design, request flow, and the dispatch model
-- [Configuration](docs/configuration.md) — config resolution (payload → env → default) and per-provider variables
-- [Adding a provider](docs/adding_a_provider.md) — how to plug in a new backend
-- [Provider contract](parameters/providers/README.md) — the `setup`/`store`/`retrieve`/`delete` interface every provider implements
+- [Architecture](docs/architecture.md) — one image, the request flow, naming and versioning, the AWS identity
+- [Configuration](docs/configuration.md) — what the notification carries, where each setting comes from, per-provider variables
+- [Adding a provider](docs/adding_a_provider.md) — the `Provider` and `Session` contract and the steps to plug in a backend
+
+The bash package:
+
+- [Architecture](parameters/docs/architecture.md), [Configuration](parameters/docs/configuration.md), [Adding a provider](parameters/docs/adding_a_provider.md)
+- [Provider contract](parameters/providers/README.md) — the `setup`/`store`/`retrieve`/`delete` scripts every provider implements
 
 ### Per-provider docs
+
+The install specs and the docs under each provider's directory serve both runtimes.
 
 | Provider | Architecture | IAM policy |
 |---|---|---|
@@ -86,32 +115,43 @@ Start here for how the package works end to end:
 
 | Test Type | What it Tests | Location | Command |
 |-----------|---------------|----------|---------|
-| **Worker tests (bun)** | the request, the canonical path, the settings chain, the role resolution and each provider against a fake of its client | `test/` | `make test-unit` (`bun test`) |
+| **Worker (bun)** | type-check, lint, format check, and the request, the canonical path, the settings chain, the role resolution and each provider against a fake of its client | `test/` | `make test-worker` (`bun run check`) |
+| **Bash package (BATS)** | `entrypoint`, `utils/`, and each provider's `setup`/`store`/`retrieve`/`delete` scripts against mocked commands | `parameters/tests/{utils,providers}/` | `make test-bash` (`bats -r parameters/tests`) |
 | **Tofu Tests** | Provider install specs (Terraform/OpenTofu modules) | `parameters/providers/<provider>/specs/**/*.tftest.hcl` | `make test-tofu` |
 | **Integration Tests** | Full workflow execution against mocked backends | `parameters/tests/integration/` | `make test-integration` |
 
-The worker's tests need no network, no cloud and no credentials: the AWS clients are faked at
-the command level (what was sent, what is answered), Key Vault behind the SDK's client
-interface, Secret Manager and Vault behind `fetch`. `bun install` once, then:
+`make test-unit` runs the first two; `make test-all` everything.
+
+The worker's tests need no network, no cloud and no credentials: the AWS
+clients are faked at the command level (what was sent, what is answered), Key
+Vault behind the SDK's client interface, Secret Manager and Vault behind
+`fetch`. `bun install` once, then `bun run check`, or each gate on its own:
 
 ```bash
+bun run typecheck
+bun run lint
+bun run format:check    # bun run format rewrites
 bun test
-bunx tsc --noEmit -p .
 ```
 
-The Tofu and integration runners are wired through the `testing/` submodule
-(`git submodule update --init --recursive`).
+The BATS tests source the shared assertions from the `testing/` submodule, and
+the Tofu and integration runners are wired through it:
+
+```bash
+git submodule update --init --recursive
+```
 
 ## Run locally as a package
 
-`np package run` runs the worker on your machine the way production does: a local
+`np package run` runs the package on your machine the way production does: a local
 controlplane-agent that registers with the platform, spawns the worker image built from this
-repo, and hands it every action routed to it, whatever backend each one names:
+repository, and hands it every action routed to it, whatever backend each one names:
 
 | Command | Runs | Does |
 |---|---|---|
-| `np package build --image` | `mise run build:image` | Builds `parameters:dev` |
+| `np package build --image` | `mise run build:image` | Builds `parameters:dev`, the worker |
 | `np package run` | `mise run run` | Builds the image, then starts the local agent |
+| `mise run build:bash-image` | | Builds `parameters-bash:dev`, the bash package, to run with `NP_WORKER_IMAGE=parameters-bash:dev` |
 
 Prerequisites: **Docker** with host networking (Linux as is; on Docker Desktop enable *host
 networking*), **[mise](https://mise.jdx.dev)** (`mise trust` once here), an **`NP_API_KEY`** for
@@ -139,6 +179,7 @@ forward nothing.
 |---|---|---|
 | `NP_API_KEY` | required | The key the agent registers with (`--api-key` also sets it) |
 | `NP_LOG_LEVEL` | `INFO` | Agent log level (`--log-level` also sets it) |
+| `NP_WORKER_IMAGE` | `parameters:dev` | The image the agent spawns; `parameters-bash:dev` for the bash package |
 | `NP_PACKAGE_SLUG` | `parameters` | The slug in the `package:<slug>` tag, when published under another slug |
 | `NP_LOCAL_USER` | `$USER` | The value of the `local:<user>` tag |
 | `NP_AGENT_IMAGE` | `controlplane-agent:latest` | The agent image; needs worker rules (0.11.1+) |
@@ -150,20 +191,26 @@ forward nothing.
 | branch-validation | PR | branch named `feat/…`, `fix/…`, `chore/…` |
 | conventional-commit | PR | commit messages (release-please reads them) |
 | shellcheck | PR | every bash script |
-| tests | PR | `tofu fmt`/`validate` of every provider spec, and the worker's tests and type-check |
-| trivy | PR | IaC misconfiguration and image scan, to the Security tab |
-| beta | PR (opened, push, reopened) | publish-test-image-oci: pushes `beta/<image>:test-<branch>-<short sha>` and registers it as a nullplatform artifact |
-| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` of the image to ECR Public → nullplatform artifacts → GitHub release |
+| tests | PR | `tofu fmt`/`validate` of every provider spec; the worker's type-check, lint, format check and tests; the bash package's BATS tests and image build |
+| trivy | PR | IaC misconfiguration scan, and both images scanned, to the Security tab |
+| beta | PR (opened, push, reopened) | publish-test-image-oci: pushes the worker as `beta/<image>:test-<branch>-<short sha>` and registers it as a nullplatform artifact |
+| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` of the worker to ECR Public → nullplatform artifact → GitHub release; then `vX.Y.Z-bash`, the bash package's image, noted on the release |
 | auto-merge-release | after release | merges the release PR |
-| dependabot | daily / weekly | base image and shared workflow bumps |
+| dependabot | daily / weekly | base image (both Dockerfiles) and shared workflow bumps |
 
 ## Image tags
 
 | Image | Moved by | Use it to |
 |---|---|---|
-| `agent-plugins/services/parameters:vX.Y.Z` | its release, once | pin an exact version |
-| `agent-plugins/services/parameters:latest` | each release | follow the last released version |
-| `beta/agent-plugins/services/parameters:test-<branch>-<short sha>` | each push to a pull request of this repository | deploy a change to a test scope before merging it |
+| `agent-plugins/services/parameters:vX.Y.Z` | its release, once | pin an exact version of the worker |
+| `agent-plugins/services/parameters:latest` | each release | follow the last released worker |
+| `agent-plugins/services/parameters:vX.Y.Z-bash` | its release, once | pin the bash package at that version |
+| `beta/agent-plugins/services/parameters:test-<branch>-<short sha>` | each push to a pull request of this repository | deploy a worker change to a test scope before merging it |
+
+The bash image is one more tag of the release's repository, built from the same
+commit: it has no `latest` and is not registered as an artifact, so the
+artifact's newest revision is always the worker's. Pin it by tag or digest in
+the agent's worker pin.
 
 Beta images live in a separate repository that the beta role can write and the production role cannot, so a beta can never overwrite a released image. Pull requests from this repository can assume the beta role (fork and bot pull requests are skipped), and the tag carries the commit SHA, so two pull requests never overwrite each other by accident. Nothing deletes beta tags: they are ephemeral by convention. Each beta is also registered as its own nullplatform oci_image artifact (the `beta/` repository, under `NP_ARTIFACT_NRN`), separate from the release artifact, so it can be deployed to a test scope from the platform.
 

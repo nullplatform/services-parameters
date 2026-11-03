@@ -26,3 +26,15 @@ jobs:
       context: .
       image_name: parameters
       exit_code: 0
+
+  # The bash package's image, the same scan.
+  bash-image:
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: nullplatform/actions-nullplatform/.github/workflows/docker-security-scan.yml@v1
+    with:
+      context: parameters
+      image_name: parameters-bash
+      exit_code: 0

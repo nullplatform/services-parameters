@@ -1,0 +1,15 @@
+configuration:
+  ACTION: delete
+steps:
+  - name: build_context
+    type: script
+    file: "$SERVICE_PATH/utils/build_context"
+    output:
+      - { name: ACTIVE_PROVIDER, type: environment }
+      - { name: PROVIDER_DIR, type: environment }
+      - { name: PARAMETER_KIND, type: environment }
+      - { name: EXTERNAL_ID, type: environment }
+      - { name: EXTERNAL_ID_PATH, type: environment }
+  - name: delete
+    type: script
+    file: "$SERVICE_PATH/utils/dispatch"

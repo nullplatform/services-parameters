@@ -1,0 +1,77 @@
+#!/bin/bash
+set -euo pipefail
+
+# Retrieves a value from Vault by external_id.
+#
+# Semantics:
+#   - HTTP 2xx → return {value: "<stored value>"}
+#   - HTTP 404 → return {value: "value not found"} (legitimate miss)
+#   - Any other HTTP status or network error → exit 1 with troubleshooting
+#
+# Required env: EXTERNAL_ID, VAULT_ADDR, VAULT_TOKEN
+# Optional env: VAULT_NAMESPACE (Vault Enterprise namespace, applied as a URL prefix)
+
+# EXTERNAL_ID_PATH and EXTERNAL_ID_VERSION are set by build_context. The path is
+# the full, self-contained KV path (the KV prefix was embedded by store), so it
+# is used verbatim — never recomposed against the current VAULT_PATH_PREFIX. This
+# keeps references valid across setup.path_prefix changes. The Vault namespace is
+# NOT part of the path; it is applied from the current config as a URL prefix.
+VAULT_PATH="$EXTERNAL_ID_PATH"
+
+NS_PREFIX=""
+[ -n "${VAULT_NAMESPACE:-}" ] && NS_PREFIX="${VAULT_NAMESPACE}/"
+
+URL="$VAULT_ADDR/v1/${NS_PREFIX}${VAULT_PATH}"
+if [ -n "${EXTERNAL_ID_VERSION:-}" ]; then
+  URL="${URL}?version=${EXTERNAL_ID_VERSION}"
+fi
+
+if ! RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    "$URL" 2>/dev/null); then
+  log error "❌ Network error calling Vault at $VAULT_ADDR"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • Vault host unreachable (DNS / network / firewall)"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Test connectivity: curl -s $VAULT_ADDR/v1/sys/health"
+  exit 1
+fi
+
+HTTP_STATUS="${RESPONSE##*$'\n'}"
+HTTP_BODY="${RESPONSE%$'\n'*}"
+
+case "$HTTP_STATUS" in
+  2*)
+    STORED_VALUE=$(echo "$HTTP_BODY" | jq -r '.data.data.value // empty')
+    jq -n --arg value "$STORED_VALUE" '{value: $value}'
+    ;;
+  404)
+    log error "❌ Secret at $VAULT_PATH not found in Vault"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • The secret was manually deleted from Vault"
+    log error "   • The external_id is stale"
+    if [ -n "${EXTERNAL_ID_VERSION:-}" ]; then
+      log error "   • Requested version '$EXTERNAL_ID_VERSION' was destroyed via Vault's metadata API"
+    fi
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/${NS_PREFIX}${VAULT_PATH}"
+    log error "   • If genuinely missing, the parameter value needs to be re-stored"
+    exit 1
+    ;;
+  *)
+    log error "❌ Vault GET failed with HTTP $HTTP_STATUS at $VAULT_PATH"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • VAULT_TOKEN lacks read permission (403)"
+    log error "   • Server-side error (5xx)"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Verify token: curl -s -H \"X-Vault-Token: \$VAULT_TOKEN\" $VAULT_ADDR/v1/auth/token/lookup-self"
+    log error "Vault response: $HTTP_BODY"
+    exit 1
+    ;;
+esac

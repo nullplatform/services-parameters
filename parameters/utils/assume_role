@@ -1,0 +1,128 @@
+#!/bin/bash
+# Sourceable helper — do NOT execute directly.
+# Reads ASSUME_ROLE_ARN_RESOLVED from the environment. If set, calls
+# sts:AssumeRole (or pulls valid creds from the local cache) and exports
+# temporary credentials so all subsequent AWS calls use that role. If empty,
+# does nothing — the agent's credentials (pod IRSA) handle auth.
+#
+# Credentials cache
+#   STS tokens are valid for ~1h (configurable up to 12h via the target role's
+#   MaxSessionDuration). The default sts:AssumeRole call takes ~0.9s — costly
+#   to repeat on every workflow run. We cache the full JSON response per ARN
+#   under $SERVICE_PATH/credentials/, keyed by a SHA-256 hash of the ARN.
+#
+#   Expiration handling: at write time we parse AWS's `.Credentials.Expiration`
+#   into a Unix epoch and store it as `._cache_exp_epoch` alongside the creds.
+#   If date(1) can't parse the ISO 8601 (busybox + non-GNU corner cases), we
+#   fall back to `now + 3540s` (1h minus a 60s margin). Read time is then just
+#   integer math: `_cache_exp_epoch - now > NP_STS_CACHE_BUFFER_SECS` (default
+#   60s). This is robust across GNU date / BSD date / busybox.
+#
+#   Files are mode 600 in a 700 dir; writes go through a tmp + atomic rename
+#   so two parallel workflows don't tear a half-written file.
+#
+# Provider-agnostic: the caller's setup goes through utils/assume_role_step,
+# which writes the final ARN to ASSUME_ROLE_ARN_RESOLVED regardless of which
+# provider-specific env var name was used as the override source.
+#
+# Requires: aws CLI, jq, and the `log` function (loaded by the workflow).
+# Expects:  ASSUME_ROLE_ARN_RESOLVED (set by utils/assume_role_step),
+#           ASSUME_ROLE_SESSION_PREFIX (set by assume_role_step, defaults to
+#           "np-parameters"), SCOPE_ID (optional, used for the session name),
+#           SERVICE_PATH (agent runtime — used for the cache dir).
+
+if [ -n "${ASSUME_ROLE_ARN_RESOLVED:-}" ]; then
+  log info "   🔑 Assuming role: $ASSUME_ROLE_ARN_RESOLVED"
+
+  _ar_session_name="${ASSUME_ROLE_SESSION_PREFIX:-np-parameters}-${SCOPE_ID:-workflow}"
+
+  # ---- Cache lookup --------------------------------------------------------
+  : "${SERVICE_PATH:?SERVICE_PATH must be set (the agent runtime supplies this)}"
+  _ar_cache_dir="$SERVICE_PATH/credentials"
+  # SHA-256 of the ARN as cache key. Try GNU coreutils first, fall back to
+  # macOS `shasum -a 256` so this also works in local smoke tests.
+  if command -v sha256sum >/dev/null 2>&1; then
+    _ar_cache_key=$(printf '%s' "$ASSUME_ROLE_ARN_RESOLVED" | sha256sum | cut -c1-16)
+  else
+    _ar_cache_key=$(printf '%s' "$ASSUME_ROLE_ARN_RESOLVED" | shasum -a 256 | cut -c1-16)
+  fi
+  _ar_cache_file="$_ar_cache_dir/$_ar_cache_key.json"
+
+  # Cache freshness check: read the precomputed `_cache_exp_epoch` we wrote at
+  # store time and compare it to now. We never parse AWS's ISO 8601 here — that
+  # date format is unreliable across `date` implementations (GNU/BSD/busybox).
+  # The epoch is computed once at write, so read-time is pure integer math.
+  ASSUMED_CREDS=""
+  if [ -s "$_ar_cache_file" ]; then
+    _ar_exp_epoch=$(jq -r '._cache_exp_epoch // 0' < "$_ar_cache_file" 2>/dev/null)
+    _ar_now=$(date -u +%s)
+    _ar_ttl=$(( _ar_exp_epoch - _ar_now ))
+    _ar_buffer="${NP_STS_CACHE_BUFFER_SECS:-60}"
+    if [ "$_ar_ttl" -gt "$_ar_buffer" ]; then
+      ASSUMED_CREDS=$(cat "$_ar_cache_file")
+      log debug "   🎫 sts cache hit (expires in ${_ar_ttl}s)"
+    else
+      log debug "   🎫 sts cache stale (ttl=${_ar_ttl}s, buffer=${_ar_buffer}s)"
+    fi
+  fi
+
+  # ---- Cache miss: do the real sts:AssumeRole call -------------------------
+  if [ -z "$ASSUMED_CREDS" ]; then
+    _ar_sts_error=$(mktemp)
+    if ! ASSUMED_CREDS=$(aws sts assume-role \
+      --role-arn "$ASSUME_ROLE_ARN_RESOLVED" \
+      --role-session-name "$_ar_session_name" \
+      --output json 2>"$_ar_sts_error"); then
+      log error "   ❌ sts:AssumeRole failed for $ASSUME_ROLE_ARN_RESOLVED"
+      log error "$(cat "$_ar_sts_error")"
+      rm -f "$_ar_sts_error"
+      return 1
+    fi
+    rm -f "$_ar_sts_error"
+
+    # Compute the cache-expiration epoch ONCE at write time. We try multiple
+    # date(1) implementations to parse AWS's ISO 8601; if all of them fail
+    # (e.g. on busybox), fall back to `now + 3540s` — STS tokens default to 1h
+    # and we always keep a 60s safety margin.
+    _ar_now=$(date -u +%s)
+    _ar_exp_iso=$(echo "$ASSUMED_CREDS" | jq -r '.Credentials.Expiration // empty')
+    _ar_exp_epoch=$(( _ar_now + 3540 ))   # conservative default (1h - 60s)
+    if [ -n "$_ar_exp_iso" ]; then
+      _ar_parsed=$(date -u -d "$_ar_exp_iso" +%s 2>/dev/null) \
+        || _ar_parsed=$(date -u -j -f "%Y-%m-%dT%H:%M:%S%z" "${_ar_exp_iso/Z/+0000}" +%s 2>/dev/null) \
+        || _ar_parsed=""
+      if [ -n "$_ar_parsed" ] && [ "$_ar_parsed" -gt "$_ar_now" ]; then
+        _ar_exp_epoch="$_ar_parsed"
+      fi
+    fi
+
+    # Persist to cache (atomic via tmp + rename so concurrent workflows can't
+    # observe a half-written file). Permissions: 600 on file, 700 on dir.
+    mkdir -p "$_ar_cache_dir"
+    chmod 700 "$_ar_cache_dir" 2>/dev/null || true
+    _ar_cache_tmp="$_ar_cache_file.$$"
+    echo "$ASSUMED_CREDS" | jq --argjson e "$_ar_exp_epoch" --arg eiso "$_ar_exp_iso" \
+      '. + {_cache_exp_epoch: $e, _cache_exp_iso: $eiso}' > "$_ar_cache_tmp"
+    chmod 600 "$_ar_cache_tmp" 2>/dev/null || true
+    mv -f "$_ar_cache_tmp" "$_ar_cache_file"
+    log debug "   🎫 sts cached at $_ar_cache_file (expires in $(( _ar_exp_epoch - _ar_now ))s)"
+  fi
+
+  # ---- Extract + export ----------------------------------------------------
+  _ar_access_key=$(echo "$ASSUMED_CREDS"    | jq -r '.Credentials.AccessKeyId // ""')
+  _ar_secret_key=$(echo "$ASSUMED_CREDS"    | jq -r '.Credentials.SecretAccessKey // ""')
+  _ar_session_token=$(echo "$ASSUMED_CREDS" | jq -r '.Credentials.SessionToken // ""')
+
+  if [ -z "$_ar_access_key" ] || [ -z "$_ar_secret_key" ] || [ -z "$_ar_session_token" ]; then
+    log error "   ❌ sts:AssumeRole returned incomplete credentials for $ASSUME_ROLE_ARN_RESOLVED"
+    return 1
+  fi
+
+  export AWS_ACCESS_KEY_ID="$_ar_access_key"
+  export AWS_SECRET_ACCESS_KEY="$_ar_secret_key"
+  export AWS_SESSION_TOKEN="$_ar_session_token"
+
+  log info "   ✅ Role assumed successfully"
+else
+  log debug "   ✅ assume_role=skipped (using agent credentials)"
+fi

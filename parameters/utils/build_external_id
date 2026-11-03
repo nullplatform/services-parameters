@@ -1,0 +1,71 @@
+#!/bin/bash
+
+# Constructs EXTERNAL_ID for a store operation by composing:
+#   <entity_type>=<slug>-<id>/.../<dim_key>=<dim_value>/<parameter_name>-<parameter_id>
+#
+# The path is human-friendly: anyone entering the storage layer manually (AWS
+# console, Vault UI, az portal) sees the entity hierarchy, the dimensions, and
+# the parameter name + id directly in the path.
+#
+# Slugs travel in the payload: entities/value_entities carry `<entity>_slug`
+# fields (organization_slug, account_slug, …, scope_slug), so no `np` call is
+# needed — the slug is read straight from CONTEXT alongside the id.
+# Entities are iterated in canonical NRN order; only present entities are included.
+# Dimensions are sorted alphabetically by key for determinism.
+#
+# Slugs in nullplatform are immutable (contract guarantee), so the resulting
+# EXTERNAL_ID is stable for the lifetime of the parameter.
+#
+# Requires: jq
+# Reads: CONTEXT (set by entrypoint)
+# Exports: EXTERNAL_ID (slash-separated canonical form)
+#
+# Each provider's store decides how to use EXTERNAL_ID:
+#   - vault/SM/PS: append to a prefix that ends with `/`
+#   - AKV: replace `/` and `=` with `-` (AKV doesn't allow those chars)
+
+# Replaces characters not allowed by AWS SM / Parameter Store secret names.
+# AWS SM allows alphanumerics and /_+=.@- ; everything else becomes underscore.
+sanitize_for_path() {
+  echo "$1" | sed 's|[^A-Za-z0-9._-]|_|g'
+}
+
+build_external_id() {
+  # value_entities is the scope-level shape (carries the scope segment).
+  # entities is the app/dimension-level shape (no scope). Falling back to {}
+  # only matters for tests; in production at least one is always present.
+  local entities_json
+  entities_json=$(echo "$CONTEXT" | jq -c '.value_entities // .entities // {}')
+
+  local entity_order=("organization" "account" "namespace" "application" "scope")
+  local segments=()
+
+  for entity_type in "${entity_order[@]}"; do
+    local entity_id slug
+    entity_id=$(echo "$entities_json" | jq -r ".$entity_type // empty")
+    [ -z "$entity_id" ] && continue
+
+    # Slug travels in the payload next to the id (e.g. organization_slug),
+    # guaranteed by the platform contract — no np call, just read it from
+    # CONTEXT's entities/value_entities.
+    slug=$(echo "$entities_json" | jq -r ".${entity_type}_slug // empty")
+    segments+=("$entity_type=${slug}-${entity_id}")
+  done
+
+  while IFS= read -r dim; do
+    [ -n "$dim" ] && segments+=("$dim")
+  done < <(echo "$CONTEXT" | jq -r '(.dimensions // {}) | to_entries | sort_by(.key) | .[] | "\(.key)=\(.value)"')
+
+  local param_id param_name
+  param_id=$(echo "$CONTEXT" | jq -r '.parameter_id // empty')
+  param_name=$(echo "$CONTEXT" | jq -r '.parameter_name // empty')
+  if [ -n "$param_name" ] && [ -n "$param_id" ]; then
+    segments+=("$(sanitize_for_path "$param_name")-$param_id")
+  elif [ -n "$param_id" ]; then
+    segments+=("$param_id")
+  fi
+
+  local IFS=/
+  EXTERNAL_ID="${segments[*]}"
+  export EXTERNAL_ID
+}

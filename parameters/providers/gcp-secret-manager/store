@@ -1,0 +1,142 @@
+#!/bin/bash
+# shellcheck disable=SC2154 # http_code and resp are set by gsm_request (api)
+set -euo pipefail
+
+# Stores a parameter as a GCP Secret Manager secret version via the REST API.
+#
+# Versioning model:
+#   nullplatform parameter values are immutable. Each update is a new VERSION.
+#   Secret Manager has native versioning — a secret holds any number of
+#   versions, billed per active version, never per secret re-creation. We
+#   exploit this:
+#     - Every store → addVersion on the secret
+#     - Only when that answers 404 (first store for this external_id) → create
+#       the secret (container only), then addVersion again. secrets.create is
+#       therefore needed on the first store only, and updates cost one call.
+#
+# Naming: the secret id is the canonical external_id path flattened by
+# naming/gsm_secret_id under the configured prefix (default "nullplatform").
+# The external_id returned to nullplatform keeps the canonical slash form.
+# See docs/architecture.md.
+#
+# Required env: CONTEXT, PARAMETERS_ROOT, PARAMETER_VALUE, GSM_PROJECT_ID,
+#               GSM_API_URL, GSM_NAME_PREFIX, GCP_ACCESS_TOKEN
+# Optional env: PARAMETER_ID, GSM_REPLICA_LOCATIONS
+
+source "$PARAMETERS_ROOT/utils/build_external_id"
+source "$(dirname "${BASH_SOURCE[0]}")/naming"
+source "$(dirname "${BASH_SOURCE[0]}")/api"
+build_external_id
+
+SECRET_ID=$(gsm_secret_id "$EXTERNAL_ID")
+
+if [ "${#SECRET_ID}" -gt "$GSM_SECRET_ID_MAX_LENGTH" ]; then
+  log error "❌ Secret id exceeds GCP Secret Manager's ${GSM_SECRET_ID_MAX_LENGTH}-character limit (got ${#SECRET_ID})"
+  log error ""
+  log error "💡 The id is the entity path (slugs + ids + dimensions + parameter):"
+  log error "   $SECRET_ID"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Shorten the parameter name, or reduce the number of dimensions"
+  log error "   • Or use a shorter name_prefix in the provider config"
+  exit 1
+fi
+
+SECRETS_URL="$GSM_API_URL/projects/$GSM_PROJECT_ID/secrets"
+
+# Automatic replication unless replica locations were configured (residency).
+if [ -n "${GSM_REPLICA_LOCATIONS:-}" ]; then
+  REPLICATION=$(jq -nc --arg locations "$GSM_REPLICA_LOCATIONS" \
+    '{userManaged: {replicas: ($locations | split(",") | map(select(. != "")) | map({location: .}))}}')
+else
+  REPLICATION='{"automatic":{}}'
+fi
+
+# One POST to the Secret Manager API (sets http_code / resp). The body goes to
+# curl on stdin and the token through a header file, so neither lands on argv.
+gsm_post() {
+  gsm_request POST "$1" "$2"
+}
+
+gsm_underlying_error() {
+  if [ "$http_code" = "000" ]; then
+    log error "Underlying error: could not connect to secretmanager.googleapis.com — no HTTP response (DNS or network egress)"
+  else
+    log error "Underlying error: $(echo "$resp" | jq -r '.error.message // "unknown error"' 2>/dev/null | head -1)"
+  fi
+}
+
+# The value is base64-encoded by jq straight from the environment (off argv).
+VERSION_BODY=$(jq -nc '{payload: {data: (env.PARAMETER_VALUE | @base64)}}')
+
+gsm_post "$SECRETS_URL/$SECRET_ID:addVersion" "$VERSION_BODY"
+
+if [ "$http_code" = "404" ]; then
+  log debug "Secret '$SECRET_ID' does not exist yet; creating it"
+
+  # Labels (cost reports, filtering): the parameter's NRN, with the keys the
+  # nullplatform services use for their platform tags. <entity>_id holds the id
+  # and <entity> the slug, for organization, account, namespace, application
+  # and, on scope-level values, scope. managed_by and parameter_id are merged
+  # last, so nothing in the payload can override them. Label values allow only
+  # lowercase letters, digits, '_' and '-' (max 63): anything else becomes '-'.
+  # CONTEXT goes to jq on stdin (it carries the value, which stays off argv).
+  CREATE_BODY=$(echo "$CONTEXT" | jq -c \
+    --argjson replication "$REPLICATION" \
+    --arg parameter_id "${PARAMETER_ID:-}" \
+    'def label_value: ascii_downcase | gsub("[^a-z0-9_-]"; "-") | .[0:63];
+     def pair($key; $value): ($value // "" | tostring) as $v | if $v == "" then {} else {($key): ($v | label_value)} end;
+     (.value_entities // .entities // {}) as $entities
+     | (reduce ("organization", "account", "namespace", "application", "scope") as $entity ({};
+         . + pair("\($entity)_id"; $entities[$entity]) + pair($entity; $entities["\($entity)_slug"]))) as $nrn
+     | {replication: $replication,
+        labels: ($nrn + {managed_by: "nullplatform"} + pair("parameter_id"; $parameter_id))}')
+
+  gsm_post "$SECRETS_URL?secretId=$SECRET_ID" "$CREATE_BODY"
+
+  # 409: a concurrent store created it between our two calls — fine.
+  if [ "$http_code" != "200" ] && [ "$http_code" != "409" ]; then
+    log error "❌ Failed to create secret '$SECRET_ID' in GCP project '$GSM_PROJECT_ID' (HTTP $http_code)"
+    log error ""
+    log error "💡 Possible causes:"
+    log error "   • The agent identity lacks secretmanager.secrets.create on the project"
+    log error "   • A replica location in the provider config is not a valid region"
+    log error ""
+    log error "🔧 How to fix:"
+    log error "   • Grant the agent principal access as in docs/iam-policy.md"
+    gsm_underlying_error
+    exit 1
+  fi
+
+  gsm_post "$SECRETS_URL/$SECRET_ID:addVersion" "$VERSION_BODY"
+fi
+
+if [ "$http_code" != "200" ]; then
+  log error "❌ Failed to add a version to secret '$SECRET_ID' in GCP project '$GSM_PROJECT_ID' (HTTP $http_code)"
+  log error ""
+  log error "💡 Possible causes:"
+  log error "   • The agent identity lacks secretmanager.versions.add on the secret"
+  log error "   • The Secret Manager API is not enabled on '$GSM_PROJECT_ID'"
+  log error "   • The value exceeds Secret Manager's 64 KiB payload limit"
+  log error "   • The access token expired"
+  log error ""
+  log error "🔧 How to fix:"
+  log error "   • Grant the agent principal access as in docs/iam-policy.md"
+  log error "   • Enable the API: gcloud services enable secretmanager.googleapis.com --project $GSM_PROJECT_ID"
+  gsm_underlying_error
+  exit 1
+fi
+
+# Version resource name: projects/<number>/secrets/<id>/versions/<n>. The last
+# path component is the native version id (an integer).
+VERSION_NAME=$(echo "$resp" | jq -r '.name // empty')
+VERSION_ID="${VERSION_NAME##*/}"
+
+[ -n "$VERSION_ID" ] && EXTERNAL_ID="${EXTERNAL_ID}#${VERSION_ID}"
+
+jq -n \
+  --arg external_id "$EXTERNAL_ID" \
+  --arg secret_id "$SECRET_ID" \
+  --arg version_name "$VERSION_NAME" \
+  --arg project_id "$GSM_PROJECT_ID" \
+  '{external_id: $external_id, metadata: {secret_id: $secret_id, version_name: $version_name, project_id: $project_id}}'
