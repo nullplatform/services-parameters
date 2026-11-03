@@ -5,6 +5,14 @@ point. Everything below is the history of
 [nullplatform/parameters-provider](https://github.com/nullplatform/parameters-provider),
 where this package lived until it moved here to ship as a worker image.
 
+## [1.1.0](https://github.com/nullplatform/services-parameters/compare/v1.0.1...v1.1.0) (2026-11-03)
+
+
+### Features
+
+* keep the bash package, published as the &lt;version&gt;-bash image ([498b9bf](https://github.com/nullplatform/services-parameters/commit/498b9bfa90e64601f0c3c66c2ad90ccf3ee52fff))
+* the parameters worker in TypeScript, beside the bash package ([004fe27](https://github.com/nullplatform/services-parameters/commit/004fe2716abe39cf98c97f3942016190f34c18f9))
+
 ## [1.0.1](https://github.com/nullplatform/services-parameters/compare/v1.0.0...v1.0.1) (2026-11-02)
 
 
