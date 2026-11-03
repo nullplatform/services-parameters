@@ -1,0 +1,33 @@
+{
+  "name": "services-parameters",
+  "version": "0.0.0",
+  "description": "Parameter and secret storage for nullplatform, one worker for every backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "lint": "eslint src test",
+    "format": "prettier --write src test",
+    "format:check": "prettier --check src test",
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun test",
+    "describe": "bun src/main.ts --describe"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
+    "@aws-sdk/client-ssm": "^3.700.0",
+    "@aws-sdk/client-sts": "^3.700.0",
+    "@azure/identity": "^4.5.0",
+    "@azure/keyvault-secrets": "^4.9.0",
+    "@nullplatform/plugin": "^0.3.0",
+    "google-auth-library": "^9.15.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "^1.2.0",
+    "eslint": "^10.14.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.72.1"
+  }
+}

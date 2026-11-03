@@ -1,8 +1,10 @@
+> The bash package's provider contract: the scripts each backend implements under `parameters/providers/<slug>/`, run by the agents on the legacy `exec` channel. The worker's contract is [`docs/adding_a_provider.md`](../../docs/adding_a_provider.md). The install specs and the docs under each provider's directory serve both runtimes.
+
 # Provider Contract
 
 This directory contains all concrete provider implementations. Each subdirectory is one provider — fully self-contained.
 
-The dispatch layer (`parameters/build_context` + `parameters/{store,retrieve,delete,notify}`) is provider-agnostic. It selects a provider at runtime from env vars `SECRET_PROVIDER` / `PARAMETER_PROVIDER` and sources the matching scripts.
+The dispatch layer (`parameters/utils/build_context` + `parameters/utils/dispatch`) is provider-agnostic. It selects the provider each notification names in `provider.specification_slug` and sources the matching scripts.
 
 **Adding a new provider is a strictly additive change**: drop a directory here that satisfies this contract. No edits to dispatch, build_context, workflows, or other providers are required. The parameters package has zero knowledge of any specific provider.
 
@@ -21,7 +23,7 @@ providers/<provider_name>/
 └── docs/                 # (recommended) architecture.md, iam-policy.md, etc.
 ```
 
-`<provider_name>` is the string users set in `SECRET_PROVIDER` / `PARAMETER_PROVIDER`. Use `snake_case` (e.g. `hashicorp-vault`, `azure-key-vault`, `aws-parameter-store`).
+`<provider_name>` is the slug of the `parameters-storage` provider specification, what every notification carries in `provider.specification_slug` (`hashicorp-vault`, `azure-key-vault`, `aws-parameter-store`).
 
 ---
 
@@ -30,7 +32,7 @@ providers/<provider_name>/
 1. `entrypoint` cleans `NP_ACTION_CONTEXT`, exports `CONTEXT` (= notification body), routes to the right workflow YAML.
 2. Workflow's `build_context` step:
    - Determines `PARAMETER_KIND` from workflow `configuration` or `$CONTEXT.secret`.
-   - Resolves `ACTIVE_PROVIDER` from `SECRET_PROVIDER` or `PARAMETER_PROVIDER` env var.
+   - Reads `ACTIVE_PROVIDER` from `$CONTEXT.provider.specification_slug`.
    - Sources `providers/$ACTIVE_PROVIDER/fetch_configuration` if present.
    - Sources `providers/$ACTIVE_PROVIDER/setup` if present.
 3. Workflow's operation step (`store`/`retrieve`/`delete`/`notify`) sources `providers/$ACTIVE_PROVIDER/<operation>` and produces the JSON response.
@@ -148,7 +150,7 @@ Output:
 { "value": "<stored value>" }
 ```
 
-If not found, return `{"value": "value not found"}` rather than erroring (precedent: existing vault/aws-secrets-manager impls).
+If not found, exit non-zero with troubleshooting, never a sentinel value: the platform would take the literal string for the parameter's value.
 
 ### `delete` — required
 

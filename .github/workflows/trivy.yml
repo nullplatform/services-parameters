@@ -26,3 +26,4 @@ jobs:
       context: .
       image_name: parameters
       exit_code: 0
+

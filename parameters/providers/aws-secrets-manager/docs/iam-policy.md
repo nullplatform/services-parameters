@@ -11,6 +11,7 @@ Minimum IAM permissions for `parameters/providers/aws-secrets-manager/`. Scoped 
 | `secretsmanager:CreateSecret`     | `store`    | Creates the secret on the first version             |
 | `secretsmanager:PutSecretValue`   | `store`    | Adds a new version when the secret already exists   |
 | `secretsmanager:GetSecretValue`   | `retrieve` | Reads the current value                             |
+| `secretsmanager:BatchGetSecretValue` | `retrieve_batch` | Reads up to 20 secrets in one call (the worker) |
 | `secretsmanager:DeleteSecret`     | `delete`   | Removes the secret entirely                         |
 
 ---
@@ -30,6 +31,7 @@ Replace `<AWS_REGION>` and `<AWS_ACCOUNT_ID>` before applying. The `nullplatform
         "secretsmanager:CreateSecret",
         "secretsmanager:PutSecretValue",
         "secretsmanager:GetSecretValue",
+        "secretsmanager:BatchGetSecretValue",
         "secretsmanager:DeleteSecret"
       ],
       "Resource": [
