@@ -18,13 +18,17 @@ const open = async (
   readFile = async () => "jwt",
 ) => {
   const fake = fakeFetch(route);
-  const provider = hashicorpVault({ clients: { fetch: fake.fetch, readFile }, env, now: () => NOW });
+  const sleeps: number[] = [];
+  const sleep = async (ms: number) => {
+    sleeps.push(ms);
+  };
+  const provider = hashicorpVault({ clients: { fetch: fake.fetch, readFile }, env, now: () => NOW, sleep });
   const request = requestFor("hashicorp-vault", {
     ...extra,
     provider: { specification_slug: "hashicorp-vault", attributes: { setup } },
   });
-  const { context } = fakeContext();
-  return { session: await provider.open(request, context), request, calls: fake.calls };
+  const { context, lines } = fakeContext();
+  return { session: await provider.open(request, context), request, calls: fake.calls, lines, sleeps };
 };
 
 describe("hashicorp-vault", () => {
@@ -138,5 +142,151 @@ describe("a batch of Vault secrets", () => {
       { external_id: "prefix/c-3", value: "value at prefix/c-3" },
     ]);
     expect(calls.filter((call) => call.method === "GET").length).toBe(3);
+  });
+});
+
+describe("a missing KV v2 mount", () => {
+  const missingMount = {
+    status: 404,
+    body: { errors: ['no handler for route "secret/data/nullplatform/x". route entry not found.'] },
+  };
+  const upgrading = {
+    status: 400,
+    body: {
+      errors: [
+        "Upgrading from non-versioned to versioned data. This backend will be unavailable for a brief period and will resume service shortly.",
+      ],
+    },
+  };
+  const written = { status: 200, body: { data: { version: 1 } } };
+  const mountRoute = (
+    writes: Array<{ status: number; body?: unknown }>,
+    mount: { status: number; body?: unknown } = { status: 204 },
+  ) => {
+    let count = 0;
+    return loginThen((_method, url) => {
+      if (url.includes("/sys/mounts/")) {
+        return mount;
+      }
+      const answer = writes[Math.min(count, writes.length - 1)];
+      count += 1;
+      return answer;
+    });
+  };
+  const writesOf = <T extends { method: string; url: string }>(calls: T[]) =>
+    calls.filter(
+      (call) => call.method === "POST" && !call.url.includes("/auth/") && !call.url.includes("/sys/mounts/"),
+    );
+  const mountsOf = <T extends { url: string }>(calls: T[]) => calls.filter((call) => call.url.includes("/sys/mounts/"));
+
+  test("is created as kv version 2 in the namespace, named by the prefix up to /data/, and the write is retried", async () => {
+    const prefix = "team/database/data/params";
+    const { session, request, calls, lines } = await open(
+      mountRoute([missingMount, written]),
+      {},
+      {
+        address: ADDRESS,
+        namespace: "admin/ns",
+        path_prefix: prefix,
+      },
+    );
+    expect(await session.store(request)).toEqual({
+      external_id: `${prefix}/${CANONICAL}#1`,
+      metadata: { vault_path: `${prefix}/${CANONICAL}` },
+    });
+    expect(mountsOf(calls)).toEqual([
+      {
+        method: "POST",
+        url: `${ADDRESS}/v1/admin/ns/sys/mounts/team/database`,
+        body: { type: "kv", options: { version: "2" } },
+        headers: { "X-Vault-Token": "hvs.token" },
+      },
+    ]);
+    expect(writesOf(calls).length).toBe(2);
+    expect(lines).toContain("info ✅ Created KV v2 mount 'team/database' in namespace admin/ns");
+  });
+
+  test("is left alone when create_mount is false, and the failure says how to create it", async () => {
+    for (const [setup, env] of [
+      [
+        { address: ADDRESS, create_mount: false },
+        { VAULT_USERNAME: "np", VAULT_PASSWORD: "pw" },
+      ],
+      [{ address: ADDRESS }, { VAULT_USERNAME: "np", VAULT_PASSWORD: "pw", VAULT_CREATE_MOUNT: "false" }],
+    ] as const) {
+      const { session, request, calls } = await open(mountRoute([missingMount, written]), {}, setup, env);
+      await expect(session.store(request)).rejects.toMatchObject({
+        code: "STORE_FAILED",
+        message: expect.stringMatching(
+          /KV v2 mount 'secret' does not exist in namespace <root>[\s\S]*vault secrets enable -path=secret -version=2 kv/,
+        ),
+      });
+      expect(mountsOf(calls)).toEqual([]);
+    }
+    await expect(open(() => undefined, {}, { address: ADDRESS, create_mount: "yes" })).rejects.toMatchObject({
+      code: "INVALID_CREATE_MOUNT",
+      message: expect.stringContaining("Invalid Vault create_mount: 'yes'"),
+    });
+  });
+
+  test("is not created without a /data/ segment, on a 403, or on a 404 that is not a missing route", async () => {
+    const ambiguous = await open(mountRoute([missingMount]), {}, { address: ADDRESS, path_prefix: "kv/nullplatform" });
+    await expect(ambiguous.session.store(ambiguous.request)).rejects.toMatchObject({
+      code: "INVALID_PATH",
+      message: expect.stringContaining("Cannot derive the KV v2 mount from path_prefix 'kv/nullplatform'"),
+    });
+    expect(mountsOf(ambiguous.calls)).toEqual([]);
+    for (const answer of [
+      { status: 403, body: { errors: ["permission denied"] } },
+      { status: 404, body: { errors: [] } },
+    ]) {
+      const { session, request, calls } = await open(mountRoute([answer]));
+      await expect(session.store(request)).rejects.toMatchObject({
+        code: "STORE_FAILED",
+        message: expect.stringContaining("KV v2 mount in path_prefix (secret/data/nullplatform) does not exist (404)"),
+      });
+      expect(mountsOf(calls)).toEqual([]);
+    }
+  });
+
+  test("counts as created when another run mounted it first, and a refused mount says which grant is missing", async () => {
+    const raced = await open(
+      mountRoute([missingMount, written], { status: 400, body: { errors: ["path is already in use at secret/"] } }),
+    );
+    expect(await raced.session.store(raced.request)).toMatchObject({ external_id: `${PATH}#1` });
+    expect(writesOf(raced.calls).length).toBe(2);
+    const refused = await open(
+      mountRoute([missingMount, written], { status: 403, body: { errors: ["permission denied"] } }),
+    );
+    await expect(refused.session.store(refused.request)).rejects.toMatchObject({
+      code: "MOUNT_FAILED",
+      message: expect.stringMatching(/Failed to create KV v2 mount 'secret' \(HTTP 403\)[\s\S]*sys\/mounts\/secret/),
+    });
+    expect(writesOf(refused.calls).length).toBe(1);
+    const failing = await open(
+      mountRoute([missingMount, written], { status: 500, body: { errors: ["internal error"] } }),
+    );
+    await expect(failing.session.store(failing.request)).rejects.toMatchObject({
+      code: "MOUNT_FAILED",
+      message: expect.stringContaining("HTTP 500"),
+    });
+    const offline = await open(loginThen((_method, url) => (url.includes("/sys/mounts/") ? undefined : missingMount)));
+    await expect(offline.session.store(offline.request)).rejects.toMatchObject({
+      code: "VAULT_UNREACHABLE",
+      message: expect.stringContaining("Network error creating the KV v2 mount in Vault"),
+    });
+  });
+
+  test("is written to again while it upgrades, at most five times after it is created", async () => {
+    const settles = await open(mountRoute([missingMount, upgrading, upgrading, written]));
+    expect(await settles.session.store(settles.request)).toMatchObject({ external_id: `${PATH}#1` });
+    expect(writesOf(settles.calls).length).toBe(4);
+    expect(settles.sleeps).toEqual([1000, 1000]);
+    const stuck = await open(mountRoute([missingMount, upgrading]));
+    await expect(stuck.session.store(stuck.request)).rejects.toMatchObject({
+      code: "STORE_FAILED",
+      message: expect.stringContaining("still initializing"),
+    });
+    expect(writesOf(stuck.calls).length).toBe(6);
   });
 });

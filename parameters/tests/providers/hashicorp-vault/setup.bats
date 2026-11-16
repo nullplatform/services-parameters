@@ -40,7 +40,7 @@ EOF
 }
 
 teardown() {
-  unset VAULT_ADDR VAULT_AUTH_MODE VAULT_TOKEN VAULT_NAMESPACE VAULT_PATH_PREFIX PROVIDER_CONFIG \
+  unset VAULT_ADDR VAULT_AUTH_MODE VAULT_TOKEN VAULT_NAMESPACE VAULT_PATH_PREFIX VAULT_CREATE_MOUNT PROVIDER_CONFIG \
         VAULT_USERNAME VAULT_PASSWORD VAULT_K8S_ROLE VAULT_K8S_JWT_PATH \
         MOCK_LOGIN_BODY MOCK_CURL_EXIT
 }
@@ -146,6 +146,52 @@ teardown() {
 
   [ "$status" -ne 0 ]
   assert_contains "$output" "❌ Invalid Vault path_prefix"
+}
+
+@test "vault setup: create_mount defaults to true" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+
+  run bash -c "$DEPS; source $SCRIPT && echo CREATE_MOUNT=\$VAULT_CREATE_MOUNT"
+
+  assert_equal "$status" "0"
+  assert_contains "$output" "CREATE_MOUNT=true"
+}
+
+@test "vault setup: create_mount=false from PROVIDER_CONFIG turns it off" {
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","create_mount":false}}'
+
+  run bash -c "$DEPS; source $SCRIPT && echo CREATE_MOUNT=\$VAULT_CREATE_MOUNT"
+
+  assert_equal "$status" "0"
+  assert_contains "$output" "CREATE_MOUNT=false"
+}
+
+@test "vault setup: create_mount=false from VAULT_CREATE_MOUNT env var turns it off" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export VAULT_CREATE_MOUNT="false"
+
+  run bash -c "$DEPS; source $SCRIPT && echo CREATE_MOUNT=\$VAULT_CREATE_MOUNT"
+
+  assert_equal "$status" "0"
+  assert_contains "$output" "CREATE_MOUNT=false"
+}
+
+@test "vault setup: rejects a create_mount that is not true or false" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export VAULT_CREATE_MOUNT="yes"
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "❌ Invalid Vault create_mount: 'yes'"
 }
 
 @test "vault setup: unknown auth_mode fails" {

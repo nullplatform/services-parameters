@@ -13,6 +13,7 @@ Provider config (from the nullplatform provider specification):
 | `setup.address`        | yes                 | Vault HTTP(S) endpoint, e.g. `https://vault.example.com:8200`.               |
 | `setup.namespace`      | no (default root)   | Vault Enterprise namespace the parameters live under, e.g. `admin/eks-null-alfa-136`. Leave empty for the root namespace (Vault OSS). |
 | `setup.path_prefix`    | no (default `secret/data/nullplatform`) | KV v2 path prefix (relative to the namespace) parameters are stored under. Must be the full `<mount>/data/<subpath>`. |
+| `setup.create_mount`   | no (default `true`) | Enable the KV v2 mount named in `path_prefix` when it does not exist. Set `false` to fail instead. |
 | `setup.auth_mode`      | yes (default `userpass`) | Authentication mode: `userpass` or `kubernetes`.                       |
 | `setup.kubernetes_role`| when `kubernetes`   | Vault Kubernetes auth role bound to the agent's ServiceAccount.              |
 
@@ -29,6 +30,30 @@ Provider config (from the nullplatform provider specification):
   stored references survive a later `path_prefix` change.
 
 The auth mounts are fixed to Vault's defaults (`auth/userpass`, `auth/kubernetes`).
+
+### Missing KV engine
+
+When a write returns `no handler for route`, the KV v2 mount named in `path_prefix`
+(everything before the first `/data/`) does not exist in the namespace. With
+`setup.create_mount` (env: `VAULT_CREATE_MOUNT`) on, which is the default, `store`
+enables it as `kv` version 2 and retries the write. The agent policy then needs:
+
+```hcl
+path "sys/mounts/secret" { capabilities = ["create", "update"] }
+```
+
+Scope it to the exact mount path, never `sys/mounts/*`: Vault authorizes this path by
+capability, not by engine type, so the grant lets the token mount any engine there.
+
+Without that capability `store` fails with a 403 on `sys/mounts/<mount>`. Either grant
+it, or enable the engine once yourself and set `create_mount` to `false`:
+
+```sh
+vault secrets enable -namespace=<namespace> -path=<mount> -version=2 kv
+```
+
+Nothing is created when `path_prefix` has no `/data/` segment, and `retrieve` /
+`delete` never create mounts.
 
 ### Vault Enterprise namespaces
 

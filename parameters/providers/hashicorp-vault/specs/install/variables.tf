@@ -42,13 +42,16 @@ variable "instances" {
     notification channel (anchored at the instance NRN). Fields:
       attributes                  — provider config matching the spec schema:
                                       sensibility.applies_to plus setup.address / setup.namespace /
-                                      setup.path_prefix / setup.auth_mode / setup.kubernetes_role.
+                                      setup.path_prefix / setup.create_mount / setup.auth_mode /
+                                      setup.kubernetes_role.
                                       namespace is the Vault Enterprise namespace (leave null for the
                                       root namespace on Vault OSS). path_prefix is the KV v2
                                       `<mount>/data/<subpath>` prefix; leave it null to use the default
-                                      (secret/data/nullplatform). auth_mode is "userpass" (default) or
-                                      "kubernetes"; kubernetes_role is only used (and required) when
-                                      auth_mode = "kubernetes" — leave it null for userpass.
+                                      (secret/data/nullplatform). create_mount (default true) lets the
+                                      agent enable a missing KV v2 mount; set false to fail instead.
+                                      auth_mode is "userpass" (default) or "kubernetes"; kubernetes_role
+                                      is only used (and required) when auth_mode = "kubernetes" — leave
+                                      it null for userpass.
       enable_notification_channel — create the agent API key + notification channel (default false).
       tags_selectors              — tags the agent uses to select/filter this channel against scope
                                       tags (e.g. { environment = "production" }); default {}.
@@ -66,6 +69,7 @@ variable "instances" {
         address         = string
         namespace       = optional(string)
         path_prefix     = optional(string)
+        create_mount    = optional(bool)
         auth_mode       = optional(string, "userpass")
         kubernetes_role = optional(string)
       })

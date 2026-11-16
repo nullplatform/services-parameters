@@ -62,11 +62,18 @@
             "order": 3,
             "default": "secret/data/nullplatform"
           },
+          "create_mount": {
+            "type": "boolean",
+            "title": "Create the KV engine if missing",
+            "description": "When the KV v2 mount named in the path prefix does not exist, the agent enables it before storing the parameter. Requires create/update on sys/mounts/<mount> in the agent policy. Turn it off to fail instead.",
+            "order": 4,
+            "default": true
+          },
           "auth_mode": {
             "type": "string",
             "title": "Authentication mode",
             "description": "How the nullplatform agent authenticates to Vault.",
-            "order": 4,
+            "order": 5,
             "default": "userpass",
             "oneOf": [
               { "const": "userpass",   "title": "Username and password" },
@@ -77,7 +84,7 @@
             "type": "string",
             "title": "Vault Kubernetes role",
             "description": "Name of the Vault Kubernetes auth role bound to the agent's ServiceAccount. Required when the authentication mode is Kubernetes.",
-            "order": 5
+            "order": 6
           }
         },
         "allOf": [
@@ -106,6 +113,10 @@
         {
           "type": "Control",
           "scope": "#/properties/setup/properties/path_prefix"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/setup/properties/create_mount"
         },
         {
           "type": "Control",
