@@ -42,13 +42,16 @@ variable "instances" {
     notification channel (anchored at the instance NRN). Fields:
       attributes                  — provider config matching the spec schema:
                                       sensibility.applies_to plus setup.address / setup.namespace /
-                                      setup.path_prefix / setup.auth_mode / setup.kubernetes_role.
+                                      setup.path_prefix / setup.auth_mode / setup.kubernetes_role /
+                                      setup.auth_path.
                                       namespace is the Vault Enterprise namespace (leave null for the
                                       root namespace on Vault OSS). path_prefix is the KV v2
                                       `<mount>/data/<subpath>` prefix; leave it null to use the default
                                       (secret/data/nullplatform). auth_mode is "userpass" (default) or
                                       "kubernetes"; kubernetes_role is only used (and required) when
-                                      auth_mode = "kubernetes" — leave it null for userpass.
+                                      auth_mode = "kubernetes" — leave it null for userpass. auth_path is
+                                      the auth mount (e.g. kubernetes-my-cluster; `auth/` prefix optional);
+                                      null or empty uses the mode's default mount.
       enable_notification_channel — create the agent API key + notification channel (default false).
       tags_selectors              — tags the agent uses to select/filter this channel against scope
                                       tags (e.g. { environment = "production" }); default {}.
@@ -68,6 +71,7 @@ variable "instances" {
         path_prefix     = optional(string)
         auth_mode       = optional(string, "userpass")
         kubernetes_role = optional(string)
+        auth_path       = optional(string)
       })
     })
   }))
@@ -86,5 +90,17 @@ variable "instances" {
       instance.attributes.setup.auth_mode != "kubernetes" || try(instance.attributes.setup.kubernetes_role, null) != null
     ])
     error_message = "attributes.setup.kubernetes_role is required when attributes.setup.auth_mode = \"kubernetes\"."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, instance in var.instances :
+      # Conditional, not ||: trimprefix fails on null and || does not short-circuit.
+      instance.attributes.setup.auth_path == null || instance.attributes.setup.auth_path == "" ? true : (
+        can(regex("^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$", trimprefix(instance.attributes.setup.auth_path, "auth/")))
+        && trimprefix(instance.attributes.setup.auth_path, "auth/") != "auth"
+      )
+    ])
+    error_message = "attributes.setup.auth_path must be a mount name (e.g. kubernetes-my-cluster): '/'-separated segments of letters, digits, '.', '_' and '-', no empty, '.' or '..' segments; an 'auth/' prefix is optional. Leave it null or empty for the default mount."
   }
 }

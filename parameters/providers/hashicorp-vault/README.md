@@ -15,8 +15,9 @@ Provider config (from the nullplatform provider specification):
 | `setup.path_prefix`    | no (default `secret/data/nullplatform`) | KV v2 path prefix (relative to the namespace) parameters are stored under. Must be the full `<mount>/data/<subpath>`. |
 | `setup.auth_mode`      | yes (default `userpass`) | Authentication mode: `userpass` or `kubernetes`.                       |
 | `setup.kubernetes_role`| when `kubernetes`   | Vault Kubernetes auth role bound to the agent's ServiceAccount.              |
+| `setup.auth_path`      | no (default: the auth mode name) | Auth method mount, relative to the namespace, e.g. `kubernetes-my-cluster`. |
 
-`namespace` and `path_prefix` are **two independent axes**:
+`namespace` and `path_prefix` are **two independent axes** (the auth mount is covered below):
 
 - **`setup.namespace`** (env: `VAULT_NAMESPACE`) — the Vault Enterprise namespace.
   It is applied as a URL prefix (`$VAULT_ADDR/v1/<namespace>/…`) on the login **and**
@@ -28,7 +29,13 @@ Provider config (from the nullplatform provider specification):
   segment, then an optional subpath. `store` embeds it in the `external_id`, so
   stored references survive a later `path_prefix` change.
 
-The auth mounts are fixed to Vault's defaults (`auth/userpass`, `auth/kubernetes`).
+**`setup.auth_path`** (env: `VAULT_AUTH_PATH`, optional) is the auth method mount,
+relative to the namespace, with or without the `auth/` prefix. Empty uses the default
+mount of the mode (`auth/userpass` or `auth/kubernetes`). A kubernetes mount validates
+a single cluster, so when Vault serves several clusters each one gets its own mount
+(e.g. `kubernetes-my-cluster`). The `vault` commands below use the default mounts:
+with a custom `auth_path`, replace `auth/<mode>` with `auth/<auth_path>` and enable the
+method with `vault auth enable -path=<auth_path> <mode>`.
 
 ### Vault Enterprise namespaces
 
@@ -151,6 +158,7 @@ above. The agent pod must run with that ServiceAccount and mount its token
 (`serviceAccountName: <agent-serviceaccount>`, `automountServiceAccountToken: true`).
 
 Then set `setup.auth_mode = kubernetes` and `setup.kubernetes_role = nullplatform-agent`
+(plus `setup.auth_path` if the mount is not `auth/kubernetes`)
 in the provider config (see [`specs/install/`](./specs/install/)). No credential
 env vars are needed in this mode.
 

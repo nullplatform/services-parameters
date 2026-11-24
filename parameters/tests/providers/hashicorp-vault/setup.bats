@@ -41,7 +41,7 @@ EOF
 
 teardown() {
   unset VAULT_ADDR VAULT_AUTH_MODE VAULT_TOKEN VAULT_NAMESPACE VAULT_PATH_PREFIX PROVIDER_CONFIG \
-        VAULT_USERNAME VAULT_PASSWORD VAULT_K8S_ROLE VAULT_K8S_JWT_PATH \
+        VAULT_USERNAME VAULT_PASSWORD VAULT_K8S_ROLE VAULT_K8S_JWT_PATH VAULT_AUTH_PATH \
         MOCK_LOGIN_BODY MOCK_CURL_EXIT
 }
 
@@ -327,7 +327,7 @@ teardown() {
   run bash -c "$DEPS; source $SCRIPT"
 
   [ "$status" -ne 0 ]
-  assert_contains "$output" "❌ Vault userpass login did not return a token"
+  assert_contains "$output" "❌ Vault userpass login via mount auth/userpass did not return a token"
 }
 
 # --- kubernetes mode --------------------------------------------------------
@@ -341,7 +341,7 @@ teardown() {
   run bash -c "$DEPS; source $SCRIPT"
 
   [ "$status" -ne 0 ]
-  assert_contains "$output" "❌ Vault userpass login did not return a token"
+  assert_contains "$output" "❌ Vault userpass login via mount auth/userpass did not return a token"
 }
 
 @test "vault setup: auth_mode kubernetes from PROVIDER_CONFIG" {
@@ -391,4 +391,148 @@ teardown() {
   assert_contains "$captured" "https://vault.example.com/v1/auth/kubernetes/login"
   assert_contains "$captured" '"role":"nullplatform-agent"'
   assert_contains "$captured" '"jwt":"eyJhbGc.k8s-jwt.sig"'
+}
+
+# --- auth_path ----------------------------------------------------------------
+
+@test "vault setup: kubernetes logs in through a custom auth_path from PROVIDER_CONFIG" {
+  export VAULT_K8S_JWT_PATH="$SA_TOKEN_FILE"
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","auth_mode":"kubernetes","kubernetes_role":"nullplatform-agent","auth_path":"kubernetes-aks-apps"}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  captured=$(cat "$CURL_LOG")
+  assert_contains "$captured" "https://vault.example.com/v1/auth/kubernetes-aks-apps/login"
+}
+
+@test "vault setup: auth_path accepts the auth/ prefix and surrounding slashes" {
+  export VAULT_K8S_JWT_PATH="$SA_TOKEN_FILE"
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","auth_mode":"kubernetes","kubernetes_role":"nullplatform-agent","auth_path":"/auth/kubernetes-aks-apps/"}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  captured=$(cat "$CURL_LOG")
+  assert_contains "$captured" "https://vault.example.com/v1/auth/kubernetes-aks-apps/login"
+}
+
+@test "vault setup: custom auth_path is namespace-prefixed" {
+  export VAULT_K8S_JWT_PATH="$SA_TOKEN_FILE"
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","namespace":"admin/ns","auth_mode":"kubernetes","kubernetes_role":"nullplatform-agent","auth_path":"kubernetes-aks-apps"}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  captured=$(cat "$CURL_LOG")
+  assert_contains "$captured" "https://vault.example.com/v1/admin/ns/auth/kubernetes-aks-apps/login"
+}
+
+@test "vault setup: userpass logs in through VAULT_AUTH_PATH env var" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export VAULT_AUTH_PATH="userpass-agents"
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  captured=$(cat "$CURL_LOG")
+  assert_contains "$captured" "https://vault.example.com/v1/auth/userpass-agents/login/agent"
+}
+
+@test "vault setup: rejects an auth_path containing a .. segment" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export PROVIDER_CONFIG='{"setup":{"auth_path":"../sys"}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "❌ Invalid Vault auth_path"
+}
+
+@test "vault setup: auth_path from PROVIDER_CONFIG wins over VAULT_AUTH_PATH env var" {
+  export VAULT_K8S_JWT_PATH="$SA_TOKEN_FILE"
+  export VAULT_AUTH_PATH="env-mount"
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","auth_mode":"kubernetes","kubernetes_role":"nullplatform-agent","auth_path":"cfg-mount"}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  captured=$(cat "$CURL_LOG")
+  assert_contains "$captured" "https://vault.example.com/v1/auth/cfg-mount/login"
+}
+
+@test "vault setup: empty auth_path falls back to the mode's default mount" {
+  export VAULT_K8S_JWT_PATH="$SA_TOKEN_FILE"
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","auth_mode":"kubernetes","kubernetes_role":"nullplatform-agent","auth_path":""}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  captured=$(cat "$CURL_LOG")
+  assert_contains "$captured" "https://vault.example.com/v1/auth/kubernetes/login"
+}
+
+@test "vault setup: logs the auth mount used for the login" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export VAULT_AUTH_PATH="userpass-agents"
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  assert_equal "$status" "0"
+  assert_contains "$output" "login via mount auth/userpass-agents"
+}
+
+@test "vault setup: rejects an auth_path with illegal characters" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+  export VAULT_AUTH_PATH="kube netes"
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "❌ Invalid Vault auth_path"
+}
+
+@test "vault setup: rejects an auth_path that normalizes to nothing" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_USERNAME="agent"
+  export VAULT_PASSWORD="pw"
+
+  for value in "auth/" "/" "auth" "//x" "x//y" "./x"; do
+    run env VAULT_AUTH_PATH="$value" bash -c "$DEPS; source $SCRIPT"
+    [ "$status" -ne 0 ] || { echo "accepted: $value"; return 1; }
+    assert_contains "$output" "❌ Invalid Vault auth_path"
+  done
+  [ ! -s "$CURL_LOG" ]
+}
+
+@test "vault setup: unknown auth_mode reports the mode, not an auth_path error" {
+  export VAULT_ADDR="https://vault.example.com"
+  export VAULT_AUTH_MODE="Kube rnetes"
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "❌ Unknown Vault authentication mode 'Kube rnetes'"
+  [[ "$output" != *"auth_path"* ]]
+}
+
+@test "vault setup: failed login on a custom mount names the mount and the raw body" {
+  export VAULT_K8S_JWT_PATH="$SA_TOKEN_FILE"
+  export MOCK_LOGIN_BODY='no handler for route'
+  export PROVIDER_CONFIG='{"setup":{"address":"https://vault.example.com","auth_mode":"kubernetes","kubernetes_role":"nullplatform-agent","auth_path":"kubernetes-typo"}}'
+
+  run bash -c "$DEPS; source $SCRIPT"
+
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "login via mount auth/kubernetes-typo did not return a token"
+  assert_contains "$output" "check .setup.auth_path / VAULT_AUTH_PATH"
+  assert_contains "$output" "Vault error: no handler for route"
 }

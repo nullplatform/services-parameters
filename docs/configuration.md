@@ -34,7 +34,7 @@ from the environment only, never from the attributes.
 | `aws-parameter-store` | `kms_key_id` (optional), `tier` (`Standard`, `Advanced`, `Intelligent-Tiering`) | `AWS_REGION` (required), `PARAMETER_STORE_ASSUME_ROLE_ARN`, `PARAMETER_STORE_ASSUME_ROLE_ARN_DEFAULT` |
 | `azure-key-vault` | `vault_name` | `AZURE_KEY_VAULT_NAME`, and the service principal: `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` |
 | `gcp-secret-manager` | `project_id`, `name_prefix` (default `nullplatform`), `replica_locations` | `GCP_SECRET_MANAGER_PROJECT_ID`, `GCP_SECRET_MANAGER_NAME_PREFIX`, `GCP_SECRET_MANAGER_REPLICA_LOCATIONS`; `GCP_ACCESS_TOKEN` overrides the Workload Identity token |
-| `hashicorp-vault` | `address`, `namespace`, `path_prefix` (default `secret/data/nullplatform`), `auth_mode` (`userpass`, `kubernetes`), `kubernetes_role` | `VAULT_ADDR`, `VAULT_NAMESPACE`, `VAULT_PATH_PREFIX`, `VAULT_AUTH_MODE`, `VAULT_K8S_ROLE`, `VAULT_K8S_JWT_PATH`; `VAULT_USERNAME`, `VAULT_PASSWORD` for userpass |
+| `hashicorp-vault` | `address`, `namespace`, `path_prefix` (default `secret/data/nullplatform`), `auth_mode` (`userpass`, `kubernetes`), `auth_path` (the auth mount, default the mode's: `auth/kubernetes`, `auth/userpass`), `kubernetes_role` | `VAULT_ADDR`, `VAULT_NAMESPACE`, `VAULT_PATH_PREFIX`, `VAULT_AUTH_MODE`, `VAULT_AUTH_PATH`, `VAULT_K8S_ROLE`, `VAULT_K8S_JWT_PATH`; `VAULT_USERNAME`, `VAULT_PASSWORD` for userpass |
 
 The name prefixes of the AWS backends are fixed (`nullplatform/`, `/nullplatform/`): one
 namespace for every platform secret, so historical handles keep resolving.

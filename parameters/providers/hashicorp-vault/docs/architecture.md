@@ -99,17 +99,19 @@ short-lived client token, which it exports as `VAULT_TOKEN`. `store`, `retrieve`
 and `delete` are auth-agnostic — they just send that token in the `X-Vault-Token`
 header. Two modes are selectable via `.setup.auth_mode` (or `VAULT_AUTH_MODE`):
 
-| Mode         | Inputs                                                                 | Login endpoint                        |
-|--------------|-----------------------------------------------------------------------|---------------------------------------|
-| `userpass`   | `VAULT_USERNAME`, `VAULT_PASSWORD` (env only — the password is sensitive) | `POST /v1/auth/userpass/login/<user>` |
-| `kubernetes` | `.setup.kubernetes_role` + the pod's ServiceAccount JWT (mounted file) | `POST /v1/auth/kubernetes/login`      |
+| Mode         | Inputs                                                                    | Login endpoint                           |
+|--------------|---------------------------------------------------------------------------|------------------------------------------|
+| `userpass`   | `VAULT_USERNAME`, `VAULT_PASSWORD` (env only — the password is sensitive) | `POST /v1/auth/<auth_path>/login/<user>` |
+| `kubernetes` | `.setup.kubernetes_role` + the pod's ServiceAccount JWT (mounted file)    | `POST /v1/auth/<auth_path>/login`        |
 
 The authenticated identity (userpass user or the Vault Kubernetes role) must have
 a policy granting read/write on the configured `VAULT_PATH_PREFIX` namespace.
 
-The auth mounts are hardcoded to Vault's defaults (`auth/userpass`,
-`auth/kubernetes`). Because the agent re-authenticates on every run, each token is
-short-lived and scoped to the identity's policy — credential/role lifecycle
-management (rotating passwords, binding the ServiceAccount) is the operator's
-responsibility. See the provider [`README.md`](../README.md) for the required
+`<auth_path>` is `.setup.auth_path` (or `VAULT_AUTH_PATH`), relative to the namespace
+with an optional `auth/` prefix. It defaults to the mode name, so the default mounts
+are `auth/userpass` and `auth/kubernetes`.
+
+Because the agent re-authenticates on every run, each token is short-lived and
+scoped to the identity's policy — credential/role lifecycle management (rotating
+passwords, binding the ServiceAccount) is the operator's responsibility. See the provider [`README.md`](../README.md) for the required
 Vault + cluster setup per mode.

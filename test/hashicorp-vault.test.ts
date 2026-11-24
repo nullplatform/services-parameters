@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_PATH_PREFIX, hashicorpVault, validVaultPath } from "../src/providers/hashicorp-vault/index";
+import {
+  authMountOf,
+  DEFAULT_PATH_PREFIX,
+  hashicorpVault,
+  validVaultPath,
+} from "../src/providers/hashicorp-vault/index";
 import { CANONICAL, fakeContext, fakeFetch, requestFor } from "./support";
 
 const NOW = new Date("2026-11-02T10:00:00.000Z");
@@ -65,8 +70,65 @@ describe("hashicorp-vault", () => {
     await expect(
       open(() => ({ status: 400, body: { errors: ["invalid username or password"] } })),
     ).rejects.toMatchObject({ code: "LOGIN_FAILED", message: expect.stringContaining("invalid username or password") });
+    await expect(open(() => ({ status: 403, body: {} }))).rejects.toMatchObject({
+      code: "LOGIN_FAILED",
+      message: expect.stringContaining("auth/userpass"),
+    });
     expect(validVaultPath("secret/data/np")).toBe(true);
     expect(validVaultPath("a b")).toBe(false);
+  });
+
+  test("auth_path picks the login mount, from the attributes or VAULT_AUTH_PATH, under the namespace", async () => {
+    const kubernetes = await open(
+      loginThen(() => undefined),
+      {},
+      {
+        address: ADDRESS,
+        namespace: "admin",
+        auth_mode: "kubernetes",
+        kubernetes_role: "np-agent",
+        auth_path: "/auth/kubernetes-aks-prod/",
+      },
+      {},
+    );
+    expect(kubernetes.calls[0]).toMatchObject({
+      url: `${ADDRESS}/v1/admin/auth/kubernetes-aks-prod/login`,
+      body: { role: "np-agent", jwt: "jwt" },
+    });
+    const userpass = await open(
+      loginThen(() => undefined),
+      {},
+      { address: ADDRESS },
+      { VAULT_USERNAME: "np", VAULT_PASSWORD: "pw", VAULT_AUTH_PATH: "team/userpass" },
+    );
+    expect(userpass.calls[0]).toMatchObject({ url: `${ADDRESS}/v1/auth/team/userpass/login/np` });
+    await expect(
+      open(() => ({ status: 400, body: { errors: [] } }), {}, { address: ADDRESS, auth_path: "kubernetes-aks-prod" }),
+    ).rejects.toMatchObject({
+      code: "LOGIN_FAILED",
+      message: expect.stringContaining("auth/kubernetes-aks-prod"),
+    });
+  });
+
+  test("an invalid auth_path fails before any call, and a bad auth_mode is still reported as such", async () => {
+    for (const authPath of ["auth/", "auth", "/", "a//b", "../x", "a/./b", ".hidden", "a b", "a?b"]) {
+      const fake = fakeFetch(() => undefined);
+      const provider = hashicorpVault({ clients: { fetch: fake.fetch, readFile: async () => "jwt" }, env: {} });
+      const request = requestFor("hashicorp-vault", {
+        provider: {
+          specification_slug: "hashicorp-vault",
+          attributes: { setup: { address: ADDRESS, auth_path: authPath } },
+        },
+      });
+      await expect(provider.open(request, fakeContext().context)).rejects.toMatchObject({ code: "INVALID_PATH" });
+      expect(fake.calls).toHaveLength(0);
+    }
+    expect(authMountOf("")).toBe("");
+    expect(authMountOf("auth/kubernetes-x")).toBe("kubernetes-x");
+    expect(authMountOf("team/k8s.v2")).toBe("team/k8s.v2");
+    await expect(
+      open(() => undefined, {}, { address: ADDRESS, auth_mode: "ldap", auth_path: "kubernetes-x" }),
+    ).rejects.toMatchObject({ code: "INVALID_AUTH_MODE" });
   });
 
   test("store writes the envelope under the prefix with the token, and the handle is the full KV path with the version", async () => {
