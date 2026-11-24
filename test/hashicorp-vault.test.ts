@@ -110,6 +110,28 @@ describe("hashicorp-vault", () => {
     });
   });
 
+  test("the login logs its mount, and a failed one names it in the causes with the raw body capped", async () => {
+    const fake = fakeFetch(() => ({ status: 403, body: "x".repeat(1000) }));
+    const provider = hashicorpVault({ clients: { fetch: fake.fetch, readFile: async () => "jwt" }, env: {} });
+    const request = requestFor("hashicorp-vault", {
+      provider: {
+        specification_slug: "hashicorp-vault",
+        attributes: {
+          setup: { address: ADDRESS, auth_mode: "kubernetes", kubernetes_role: "np-agent", auth_path: "k8s-prod" },
+        },
+      },
+    });
+    const { context, lines } = fakeContext();
+    const failure = await provider.open(request, context).catch((error: Error) => error);
+    expect(lines).toContain("info Vault kubernetes login via mount auth/k8s-prod");
+    expect(failure).toMatchObject({ code: "LOGIN_FAILED" });
+    const message = (failure as Error).message;
+    expect(message).toContain("No kubernetes auth method is enabled at auth/k8s-prod");
+    expect(message).toContain("The mount at auth/k8s-prod does not validate this cluster's tokens");
+    expect(message).toContain("x".repeat(150));
+    expect(message).not.toContain("x".repeat(201));
+  });
+
   test("an invalid auth_path fails before any call, and a bad auth_mode is still reported as such", async () => {
     for (const authPath of ["auth/", "auth", "/", "a//b", "../x", "a/./b", ".hidden", "a b", "a?b"]) {
       const fake = fakeFetch(() => undefined);
@@ -126,6 +148,7 @@ describe("hashicorp-vault", () => {
     expect(authMountOf("")).toBe("");
     expect(authMountOf("auth/kubernetes-x")).toBe("kubernetes-x");
     expect(authMountOf("team/k8s.v2")).toBe("team/k8s.v2");
+    expect(authMountOf("auth/auth/x")).toBe("auth/x");
     await expect(
       open(() => undefined, {}, { address: ADDRESS, auth_mode: "ldap", auth_path: "kubernetes-x" }),
     ).rejects.toMatchObject({ code: "INVALID_AUTH_MODE" });

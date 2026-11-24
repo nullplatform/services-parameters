@@ -318,7 +318,7 @@ export async function login(api: VaultApi, mode: string, options: LoginOptions):
     const errors =
       Array.isArray(answer.body.errors) && answer.body.errors.length > 0
         ? answer.body.errors.join("; ")
-        : answer.text || `HTTP ${answer.status}`;
+        : answer.text.slice(0, 200) || `HTTP ${answer.status}`;
     throw new Failure("LOGIN_FAILED", {
       what: `Vault ${mode} login via mount auth/${mount} did not return a token (${api.url(path)})`,
       causes: [
