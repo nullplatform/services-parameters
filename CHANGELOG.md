@@ -5,6 +5,19 @@ point. Everything below is the history of
 [nullplatform/parameters-provider](https://github.com/nullplatform/parameters-provider),
 where this package lived until it moved here to ship as a worker image.
 
+## [1.2.0](https://github.com/nullplatform/services-parameters/compare/v1.1.1...v1.2.0) (2026-11-25)
+
+
+### Features
+
+* **hashicorp-vault:** make the auth mount configurable (setup.auth_path) ([d97b27a](https://github.com/nullplatform/services-parameters/commit/d97b27aaf6a7abbb352d5a01352f9dc2027a5f0e))
+* **hashicorp-vault:** make the auth mount configurable (setup.auth_path) ([35480f9](https://github.com/nullplatform/services-parameters/commit/35480f9e419de415411ca1acfc5570f6fa5c1e8e))
+
+
+### Bug Fixes
+
+* **hashicorp-vault:** cap the raw login body in LOGIN_FAILED and cover the login log ([849dde7](https://github.com/nullplatform/services-parameters/commit/849dde7d643134a0f2a9ae93e41dff18c7cd02eb))
+
 ## [1.1.1](https://github.com/nullplatform/services-parameters/compare/v1.1.0...v1.1.1) (2026-11-16)
 
 
