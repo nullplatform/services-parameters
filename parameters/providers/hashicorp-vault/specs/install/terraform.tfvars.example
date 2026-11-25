@@ -45,6 +45,8 @@ instances = {
         # Provision the cluster-side resources with the requirements/ module.
         auth_mode       = "kubernetes"
         kubernetes_role = "nullplatform-agent"
+        # auth_path: kubernetes auth mount (default "kubernetes"). Set it when Vault validates
+        # this cluster through its own mount: auth_path = "kubernetes-staging-cluster"
       }
     }
   }

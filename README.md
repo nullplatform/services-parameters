@@ -78,7 +78,9 @@ worker:
   the worker needs the identity the agent had: IRSA on EKS (AWS providers),
   Workload Identity on GKE (GCP Secret Manager), the ServiceAccount bound to the
   Vault Kubernetes auth role. Point the pin's `serviceAccount` at the agent's
-  ServiceAccount, or at a dedicated one bound to the same role. Azure Key Vault
+  ServiceAccount, or at a dedicated one bound to the same role. When Vault runs
+  in another cluster, its `auth/kubernetes` validates that cluster's tokens: give
+  this one its own mount and set it in `setup.auth_path`. Azure Key Vault
   authenticates with the service principal in the provider config, so it needs
   nothing here.
 - **`AWS_REGION`.** The AWS providers read it from the environment. The worker

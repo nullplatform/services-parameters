@@ -5,7 +5,8 @@
  * the version number, so a later change of prefix leaves old handles valid; an
  * Enterprise namespace is not in it, it prefixes every request's URL. The
  * worker logs in with a username and password from the environment, or with
- * the pod's service account token, and uses the client token it gets.
+ * the pod's service account token, at the mode's mount or the one in
+ * `auth_path`, and uses the client token it gets.
  */
 
 import type { Context } from "@nullplatform/plugin";
@@ -43,6 +44,33 @@ export const validVaultPath = (value: string): boolean =>
   value === "" || (!value.includes("..") && /^[A-Za-z0-9._/-]+$/.test(value));
 
 const trimSlashes = (value: string): string => value.replace(/^\/+/, "").replace(/\/+$/, "");
+
+/** A mount under `auth/`: segments of [A-Za-z0-9._-], none empty or starting with '.'. */
+const AUTH_MOUNT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/;
+
+/**
+ * The configured auth mount without its `auth/` prefix and one surrounding slash, as the bash
+ * normalizes it; "" when unset, so the login falls back to the mode's default mount.
+ */
+export function authMountOf(raw: string): string {
+  if (raw === "") {
+    return "";
+  }
+  const mount = raw
+    .replace(/^\//, "")
+    .replace(/^auth\//, "")
+    .replace(/\/$/, "");
+  if (!validVaultPath(mount) || !AUTH_MOUNT.test(mount) || mount === "auth") {
+    throw new Failure("INVALID_PATH", {
+      what: `Invalid Vault auth_path: '${raw}'`,
+      causes: [
+        ".setup.auth_path / VAULT_AUTH_PATH is empty after removing 'auth/' and slashes, or has empty or '.' segments",
+      ],
+      fixes: ["Set the mount name, e.g. 'kubernetes-my-cluster', or leave it unset for the default mount"],
+    });
+  }
+  return mount;
+}
 
 /** The stamp the bash wrote: RFC3339 at second precision. */
 const stampOf = (date: Date): string => date.toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -202,11 +230,15 @@ export interface LoginOptions {
   attributes: Record<string, unknown>;
   env: Record<string, string | undefined>;
   clients: VaultClients;
+  /** The auth mount from `authMountOf`; "" for the mode's default (`auth/userpass`, `auth/kubernetes`). */
+  mount?: string;
+  log?: Context["log"];
 }
 
 /** Logs in as the configuration says and returns the client token. */
 export async function login(api: VaultApi, mode: string, options: LoginOptions): Promise<string> {
   const { attributes, env, clients } = options;
+  const mount = options.mount || mode;
   let path: string;
   let body: Record<string, string>;
   if (mode === "userpass") {
@@ -229,7 +261,7 @@ export async function login(api: VaultApi, mode: string, options: LoginOptions):
         ],
       });
     }
-    path = `auth/userpass/login/${encodeURIComponent(username)}`;
+    path = `auth/${mount}/login/${encodeURIComponent(username)}`;
     body = { password };
   } else if (mode === "kubernetes") {
     const role = settingOf(attributes, env, { attribute: "setup.kubernetes_role", variable: "VAULT_K8S_ROLE" });
@@ -263,7 +295,7 @@ export async function login(api: VaultApi, mode: string, options: LoginOptions):
         ],
       });
     }
-    path = "auth/kubernetes/login";
+    path = `auth/${mount}/login`;
     body = { role, jwt: jwt.trim() };
   } else {
     throw new Failure("INVALID_AUTH_MODE", {
@@ -272,6 +304,7 @@ export async function login(api: VaultApi, mode: string, options: LoginOptions):
       fixes: ["Set auth_mode to one of: userpass, kubernetes"],
     });
   }
+  options.log?.info(`Vault ${mode} login via mount auth/${mount}`);
   const answer = await api.call("POST", path, { body });
   if (answer.status === 0) {
     throw new Failure("VAULT_UNREACHABLE", {
@@ -282,19 +315,21 @@ export async function login(api: VaultApi, mode: string, options: LoginOptions):
   }
   const token = text(valueAt(answer.body, "auth.client_token"));
   if (token === "") {
-    const errors = Array.isArray(answer.body.errors) ? answer.body.errors.join("; ") : "unknown error";
+    const errors =
+      Array.isArray(answer.body.errors) && answer.body.errors.length > 0
+        ? answer.body.errors.join("; ")
+        : answer.text.slice(0, 200) || `HTTP ${answer.status}`;
     throw new Failure("LOGIN_FAILED", {
-      what: `Vault ${mode} login did not return a token`,
-      causes:
-        mode === "userpass"
-          ? [
-              "Wrong VAULT_USERNAME / VAULT_PASSWORD",
-              "The userpass auth method is not enabled (vault auth enable userpass)",
-            ]
+      what: `Vault ${mode} login via mount auth/${mount} did not return a token (${api.url(path)})`,
+      causes: [
+        `No ${mode} auth method is enabled at auth/${mount} in this namespace (check .setup.auth_path / VAULT_AUTH_PATH)`,
+        ...(mode === "userpass"
+          ? ["Wrong VAULT_USERNAME / VAULT_PASSWORD"]
           : [
               `The Vault role does not exist or does not bind this pod's ServiceAccount`,
-              "The kubernetes auth method is not enabled or configured (vault auth enable kubernetes)",
-            ],
+              `The mount at auth/${mount} does not validate this cluster's tokens (kubernetes_host, CA, token_reviewer_jwt)`,
+            ]),
+      ],
       fixes: ["See the provider README for the required Vault + cluster setup"],
       underlying: `Vault error: ${errors}`,
     });
@@ -324,6 +359,9 @@ export function hashicorpVault(options: VaultOptions = {}): Provider {
         variable: "VAULT_PATH_PREFIX",
         fallback: DEFAULT_PATH_PREFIX,
       }).replace(/\/+$/, "");
+      const mount = authMountOf(
+        settingOf(attributes, env, { attribute: "setup.auth_path", variable: "VAULT_AUTH_PATH" }),
+      );
       for (const [name, value] of [
         ["namespace", namespace],
         ["path_prefix", pathPrefix],
@@ -347,7 +385,7 @@ export function hashicorpVault(options: VaultOptions = {}): Provider {
         });
       }
       const api = new VaultApi(clients.fetch, address.replace(/\/+$/, ""), namespace);
-      const token = await login(api, mode, { attributes, env, clients });
+      const token = await login(api, mode, { attributes, env, clients, mount, log: context.log });
       return new VaultSession(api, token, pathPrefix, now, context);
     },
   };
